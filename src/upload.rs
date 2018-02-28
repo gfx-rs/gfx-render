@@ -4,10 +4,10 @@ use std::slice::from_raw_parts_mut;
 
 use hal::{Backend, Device};
 use hal::buffer::Usage as BufferUsage;
-use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, Offset, RawCommandBuffer,
+use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer,
                    RawLevel};
 use hal::device::Extent;
-use hal::image::{ImageLayout, SubresourceLayers};
+use hal::image::{ImageLayout, Offset, SubresourceLayers};
 use hal::mapping::Error as MappingError;
 use hal::memory::Properties;
 use hal::pool::{CommandPoolCreateFlags, RawCommandPool};

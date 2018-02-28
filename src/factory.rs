@@ -13,11 +13,10 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut, Range};
 
 use hal::{Backend, Instance, Surface};
-use hal::buffer;
-use hal::command::Offset;
+use hal::buffer::Usage as BufferUsage;
 use hal::device::Extent;
 use hal::format::Format;
-use hal::image;
+use hal::image::{Kind, Level, ImageLayout, Offset, Usage as ImageUsage, SubresourceLayers};
 use hal::memory::Properties;
 use hal::queue;
 use hal::window::SurfaceCapabilities;
@@ -128,7 +127,7 @@ where
         &mut self,
         size: u64,
         properties: Properties,
-        usage: buffer::Usage,
+        usage: BufferUsage,
     ) -> Result<Buffer<B>, Error> {
         let buffer: RelevantBuffer<B> = self.allocator
             .create_buffer(
@@ -155,11 +154,11 @@ where
     /// 
     pub fn create_image(
         &mut self,
-        kind: image::Kind,
-        level: image::Level,
+        kind: Kind,
+        level: Level,
         format: Format,
         properties: Properties,
-        usage: image::Usage,
+        usage: ImageUsage,
     ) -> Result<Image<B>, Error> {
         let image = self.allocator
             .create_image(
@@ -245,8 +244,8 @@ where
     pub fn upload_image(
         &mut self,
         image: &mut Image<B>,
-        layout: image::ImageLayout,
-        layers: image::SubresourceLayers,
+        layout: ImageLayout,
+        layers: SubresourceLayers,
         offset: Offset,
         extent: Extent,
         data: &[u8],
