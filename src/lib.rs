@@ -28,6 +28,6 @@ mod init;
 
 pub use init::init;
 pub use factory::{Factory, Item, Buffer, Image};
-pub use renderer::{Renderer, TargetId};
+pub use renderer::{Renderer, Render, TargetId};
 
 error_chain!{}
