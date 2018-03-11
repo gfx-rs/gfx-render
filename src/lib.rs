@@ -26,6 +26,7 @@ mod renderer;
 mod upload;
 mod init;
 
+pub use backend::BackendEx;
 pub use init::init;
 pub use factory::{Factory, Item, Buffer, Image};
 pub use renderer::{Renderer, Render, TargetId};
