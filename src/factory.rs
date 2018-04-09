@@ -13,10 +13,9 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut, Range};
 
 use hal::{Backend, Instance, Surface};
-use hal::buffer::Usage as BufferUsage;
-use hal::device::Extent;
+use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::format::Format;
-use hal::image::{Kind, Level, ImageLayout, Offset, Usage as ImageUsage, SubresourceLayers};
+use hal::image::{Access as ImageAccess, Kind, Level, Extent, Layout, Offset, Usage as ImageUsage, StorageFlags, SubresourceLayers, Tiling};
 use hal::memory::Properties;
 use hal::queue;
 use hal::window::SurfaceCapabilities;
@@ -157,8 +156,10 @@ where
         kind: Kind,
         level: Level,
         format: Format,
+        tiling: Tiling,
         properties: Properties,
         usage: ImageUsage,
+        storage_flags: StorageFlags,
     ) -> Result<Image<B>, Error> {
         let image = self.allocator
             .create_image(
@@ -167,7 +168,9 @@ where
                 kind,
                 level,
                 format,
+                tiling,
                 usage,
+                storage_flags,
             )
             .map_err(|err| Error::with_chain(err, "Failed to create image"))?;
         Ok(Item {
@@ -214,6 +217,7 @@ where
     ///
     pub fn upload_buffer(
         &mut self,
+        access: BufferAccess,
         buffer: &mut Buffer<B>,
         offset: u64,
         data: &[u8],
@@ -222,7 +226,7 @@ where
         let ref mut allocator = self.allocator;
         if let Some(staging) =
             self.upload
-                .upload_buffer(device, allocator, &mut *buffer.inner, offset, data)?
+                .upload_buffer(device, allocator, &mut *buffer.inner, access, offset, data)?
         {
             self.reclamation
                 .push(self.current, AnyItem::Buffer(staging));
@@ -244,7 +248,8 @@ where
     pub fn upload_image(
         &mut self,
         image: &mut Image<B>,
-        layout: ImageLayout,
+        layout: Layout,
+        access: ImageAccess,
         layers: SubresourceLayers,
         offset: Offset,
         extent: Extent,
@@ -254,7 +259,7 @@ where
         let ref mut allocator = self.allocator;
         let staging =
             self.upload
-                .upload_image(device, allocator, &mut *image.inner, data, layout, layers, offset, extent)?;
+                .upload_image(device, allocator, &mut *image.inner, access, layout, layers, offset, extent, data)?;
         self.reclamation
             .push(self.current, AnyItem::Buffer(staging));
         Ok(())

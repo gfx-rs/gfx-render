@@ -6,18 +6,18 @@ authors = ["omni-viral <scareaangel@gmail.com>"]
 [dependencies]
 crossbeam-channel = "0.1"
 error-chain = "0.11"
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "070e0cee4", features = ["serde"] }
-gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "ec605bd3d" }
+gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "efa0822a", features = ["serde"] }
+gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "5d0b31a0" }
 log = "0.4"
 winit = "= 0.10.0"
 
-gfx-backend-empty = { version = "0.1", git = "https://github.com/gfx-rs/gfx", rev = "070e0cee4" }
+gfx-backend-empty = { version = "0.1", git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "070e0cee4" }
+gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "070e0cee4" }
+gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
 
 [target.'cfg(windows)'.dependencies]
-gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "070e0cee4" }
+gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }

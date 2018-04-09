@@ -3,14 +3,15 @@ use std::collections::VecDeque;
 use std::slice::from_raw_parts_mut;
 
 use hal::{Backend, Device};
-use hal::buffer::Usage as BufferUsage;
+use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer,
                    RawLevel};
-use hal::device::Extent;
-use hal::image::{ImageLayout, Offset, SubresourceLayers};
+
+use hal::image::{Access as ImageAccess, Extent, Layout, Offset, SubresourceLayers, SubresourceRange};
 use hal::mapping::Error as MappingError;
-use hal::memory::Properties;
+use hal::memory::{Barrier, Dependencies, Properties};
 use hal::pool::{CommandPoolCreateFlags, RawCommandPool};
+use hal::pso::PipelineStage;
 use hal::queue::QueueFamilyId;
 
 use mem::{Block, Factory, Item, SmartAllocator, SmartBlock, Type};
@@ -50,6 +51,7 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         buffer: &mut SmartBuffer<B>,
+        access: BufferAccess,
         offset: u64,
         data: &[u8],
     ) -> Result<Option<SmartBuffer<B>>, Error> {
@@ -73,7 +75,7 @@ where
             }
             Ok(None)
         } else {
-            self.upload_device_local_buffer(device, allocator, buffer, offset, data)
+            self.upload_device_local_buffer(device, allocator, buffer, access, offset, data)
         }
     }
 
@@ -82,11 +84,12 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         image: &mut SmartImage<B>,
-        data: &[u8],
-        layout: ImageLayout,
+        access: ImageAccess,
+        layout: Layout,
         layers: SubresourceLayers,
         offset: Offset,
         extent: Extent,
+        data: &[u8],
     ) -> Result<SmartBuffer<B>, Error> {
         let staging = allocator
             .create_buffer(
@@ -107,17 +110,31 @@ where
                 data,
             );
         }
-        self.get_command_buffer(device).copy_buffer_to_image(
+        let cbuf = self.get_command_buffer(device);
+        cbuf.copy_buffer_to_image(
             staging.borrow(),
             image.borrow_mut(),
-            layout,
+            Layout::TransferDstOptimal,
             Some(BufferImageCopy {
                 buffer_offset: 0,
                 buffer_width: 0,
                 buffer_height: 0,
-                image_layers: layers,
+                image_layers: layers.clone(),
                 image_offset: offset,
                 image_extent: extent,
+            }),
+        );
+        cbuf.pipeline_barrier(
+            PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+            Dependencies::empty(),
+            Some(Barrier::Image {
+                states: (ImageAccess::TRANSFER_WRITE, Layout::TransferDstOptimal) .. (access, layout),
+                target: image.borrow_mut(),
+                range: SubresourceRange {
+                    aspects: layers.aspects,
+                    levels: layers.level .. layers.level,
+                    layers: layers.layers,
+                }
             }),
         );
         Ok(staging)
@@ -169,12 +186,22 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         buffer: &mut SmartBuffer<B>,
+        access: BufferAccess,
         offset: u64,
         data: &[u8],
     ) -> Result<Option<SmartBuffer<B>>, Error> {
         if data.len() <= self.staging_threshold {
-            self.get_command_buffer(device)
-                .update_buffer((&*buffer).borrow(), offset, data);
+            let cbuf = self.get_command_buffer(device);
+            cbuf.update_buffer(buffer.borrow_mut(), offset, data);
+
+            cbuf.pipeline_barrier(
+                PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+                Dependencies::empty(),
+                Some(Barrier::Buffer {
+                    states: BufferAccess::TRANSFER_WRITE .. access,
+                    target: buffer.borrow_mut(),
+                }),
+            );
             Ok(None)
         } else {
             let staging = allocator
@@ -196,13 +223,22 @@ where
                     data,
                 );
             }
-            self.get_command_buffer(device).copy_buffer(
+            let cbuf = self.get_command_buffer(device);
+            cbuf.copy_buffer(
                 staging.borrow(),
                 (&*buffer).borrow(),
                 Some(BufferCopy {
                     src: 0,
                     dst: offset,
                     size: data.len() as u64,
+                }),
+            );
+            cbuf.pipeline_barrier(
+                PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+                Dependencies::empty(),
+                Some(Barrier::Buffer {
+                    states: BufferAccess::TRANSFER_WRITE .. access,
+                    target: buffer.borrow_mut(),
                 }),
             );
             Ok(Some(staging))

@@ -3,9 +3,9 @@ use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
 use hal::{Backend, Device as HalDevice};
-use hal::command::{Rect, Viewport};
 use hal::image::Kind;
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
+use hal::pso::{Rect, Viewport};
 use hal::queue::{General, QueueGroup, CommandQueue, RawCommandQueue, RawSubmission, Supports};
 use hal::window::{Backbuffer, FrameSync, Surface, Swapchain, SwapchainConfig, Frame as SurfaceFrame};
 
@@ -324,8 +324,8 @@ struct Payload<B: Backend> {
 
 fn viewport(kind: Kind) -> Viewport {
     match kind {
-        Kind::D2(w, h, _) | Kind::D2Array(w, h, _, _) => Viewport {
-            rect: Rect { x: 0, y: 0, w, h },
+        Kind::D2(w, h, _, _) => Viewport {
+            rect: Rect { x: 0, y: 0, w: w as u16, h: h as u16 },
             depth: 0.0..1.0,
         },
         _ => panic!("Unsupported surface kind"),
