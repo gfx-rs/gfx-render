@@ -3,11 +3,9 @@ use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
 use hal::{Backend, Device as HalDevice};
-use hal::image::Kind;
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
-use hal::pso::{Rect, Viewport};
 use hal::queue::{General, QueueGroup, CommandQueue, RawCommandQueue, RawSubmission, Supports};
-use hal::window::{Backbuffer, FrameSync, Surface, Swapchain, SwapchainConfig, Frame as SurfaceFrame};
+use hal::window::{Backbuffer, FrameSync, Swapchain, SwapchainConfig, Frame};
 
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
@@ -16,9 +14,18 @@ use Error;
 use factory::Factory;
 
 pub trait Render<B: Backend, T> {
-    fn render<C>(&mut self, &mut CommandQueue<B, C>, &mut CommandPool<B, C>, &Backbuffer<B>, SurfaceFrame,
-    &B::Semaphore, &B::Semaphore, Viewport, &B::Fence, &mut Factory<B>, data: &mut T)
-    where
+    fn render<C>(
+        &mut self,
+        queue: &mut CommandQueue<B, C>,
+        pool: &mut CommandPool<B, C>,
+        backbuffer: &Backbuffer<B>,
+        frame: Frame,
+        acquire: &B::Semaphore,
+        release: &B::Semaphore,
+        fence: &B::Fence,
+        factory: &mut Factory<B>,
+        data: &mut T
+    ) where
         C: Supports<General>;
 }
 
@@ -62,10 +69,8 @@ where
             surface,
             swapchain,
             backbuffer,
-            active: None,
-            renders: Vec::new(),
-            frames: VecDeque::new(),
-            jobs: Vec::new(),
+            render: None,
+            jobs: Jobs::new(),
         };
         self.targets.insert(id, target);
         id
@@ -77,16 +82,17 @@ where
     }
 
     /// Add graph to the render
-    pub fn add_render(
+    pub fn set_render(
         &mut self,
         id: TargetId,
         render: R,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<R>, Error> {
+        use std::mem::replace;
+
         let ref mut target = *self.targets
             .get_mut(&id)
             .ok_or(format!("No render with id {:#?}", id))?;
-        target.renders.push(render);
-        Ok(())
+        Ok(replace(&mut target.render, Some(render)))
     }
 
     /// Create new render system providing it with general queue group and surfaces to draw onto
@@ -123,11 +129,10 @@ where
             target.run(factory, &mut self.resources, data);
         }
 
-        // walk over frames and find earliest
+        // walk over job_queue and find earliest
         let earliest = self.targets
             .values()
-            .filter_map(|target| target.frames.front())
-            .map(|f| f.started)
+            .filter_map(|target| target.jobs.earliest())
             .min()
             .unwrap();
 
@@ -161,81 +166,129 @@ where
     }
 }
 
+struct Jobs<B: Backend> {
+    queue: VecDeque<(Frame, u64)>,
+    jobs: Vec<Job<B>>,
+}
+
+impl<B> Jobs<B>
+where
+    B: Backend,
+{
+    fn new() -> Self {
+        Jobs {
+            queue: VecDeque::new(),
+            jobs: Vec::new(),
+        }
+    }
+
+    fn earliest(&self) -> Option<u64> {
+        self.queue.front().map(|&(_, index)| index)
+    }
+
+    fn enqueue(&mut self, frame: Frame, index: u64, factory: &mut Factory<B>, resources: &mut Resources<B>) -> &mut Job<B> {
+        while frame.id() >= self.jobs.len() {
+            self.jobs.push(Job {
+                release: resources.semaphores
+                    .pop()
+                    .unwrap_or_else(|| factory.create_semaphore()),
+                payload: None,
+            });
+        }
+        self.queue.push_back((frame.clone(), index));
+        &mut self.jobs[frame.id()]
+    }
+
+    fn wait<F>(&mut self, frame: Option<Frame>, mut f: F)
+    where
+        F: FnMut(Payload<B>),
+    {
+        while let Some((j, _)) = self.queue.pop_front() {
+            f(self.jobs[j.id()].payload.take().unwrap());
+            if frame.as_ref().map_or(false, |f| f.id() == j.id()) {
+                break;
+            }
+        }
+    }
+
+    fn clean<F>(&mut self, mut f: F)
+    where
+        F: FnMut(Option<Payload<B>>, B::Semaphore),
+    {
+        for Job { payload, release } in self.jobs.drain(..) {
+            f(payload, release);
+        }
+    }
+}
+
 struct Target<B: Backend, R> {
     queue: usize,
     surface: B::Surface,
     swapchain: B::Swapchain,
     backbuffer: Backbuffer<B>,
-    active: Option<usize>,
-    renders: Vec<R>,
-    frames: VecDeque<Frame>,
-    jobs: Vec<Job<B>>,
+    render: Option<R>,
+    jobs: Jobs<B>,
 }
 
 impl<B, R> Target<B, R>
 where
     B: Backend,
 {
+    fn clean(&mut self, factory: &mut Factory<B>, resources: &mut Resources<B>) {
+        // Target wants to stop processing.
+        // Wait for associated queue to become idle.
+        resources.group.queues[self.queue]
+            .wait_idle()
+            .expect("Device lost or something");
+
+        // Cleanup all jobs.
+        self.jobs.clean(|payload, release| {
+            payload.map(|mut payload| {
+                // reset fence and pool
+                factory.reset_fence(&payload.fence);
+                payload.pool.reset();
+
+                // Reclaim fence, pool and semaphores
+                resources.fences.push(payload.fence);
+                resources.pools.push(payload.pool);
+                resources.semaphores.push(payload.acquire);
+            });
+            resources.semaphores.push(release);
+        });
+    }
+
     fn run<T>(&mut self, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T)
     where
         R: Render<B, T>,
     {
-        if let Some(active) = self.active {
+        if let Some(ref mut render) = self.render {
             // Get fresh semaphore.
             let acquire = resources.semaphores
                 .pop()
                 .unwrap_or_else(|| factory.create_semaphore());
 
             // Start frame acquisition.
-            let surface_frame = self.swapchain.acquire_frame(FrameSync::Semaphore(&acquire));
-            let frame = Frame {
-                index: surface_frame.id(),
-                started: factory.current(),
-            };
+            let frame = self.swapchain.acquire_frame(FrameSync::Semaphore(&acquire));
+            let index = factory.current();
 
-            // Grow job vector.
-            while frame.index >= self.jobs.len() {
-                self.jobs.push(Job {
-                    release: resources.semaphores
-                        .pop()
-                        .unwrap_or_else(|| factory.create_semaphore()),
-                    payload: None,
-                });
-            }
-
-            // Pop earliest jobs ...
-            while let Some(f) = self.frames.pop_front() {
-                // Get the job.
-                let ref mut job = self.jobs[f.index];
-
-                if let Some(Payload {
-                    fence,
-                    mut pool,
-                    acquire,
-                    ..
-                }) = job.payload.take()
-                {
-                    // Wait for job to finish.
-                    if !factory.wait_for_fence(&fence, !0) {
-                        panic!("Device lost or something");
-                    }
-                    // reset fence and pool
-                    factory.reset_fence(&fence);
-                    pool.reset();
-
-                    // Reclaim fence, pool and acquisition semaphore
-                    resources.fences.push(fence);
-                    resources.pools.push(pool);
-                    resources.semaphores.push(acquire);
+            // Wait for earliest jobs ...
+            self.jobs.wait(Some(frame.clone()), |mut payload| {
+                // Wait for job to finish.
+                if !factory.wait_for_fence(&payload.fence, !0) {
+                    panic!("Device lost or something");
                 }
+                // reset fence and pool
+                factory.reset_fence(&payload.fence);
+                payload.pool.reset();
 
-                // ... until the job associated with current frame
-                if f.index == frame.index {
-                    break;
-                }
-            }
+                // Reclaim fence, pool and acquisition semaphore
+                resources.fences.push(payload.fence);
+                resources.pools.push(payload.pool);
+                resources.semaphores.push(payload.acquire);
+            });
 
-            let ref mut job = self.jobs[frame.index];
+            // Enqueue frame.
+            let job = self.jobs.enqueue(frame.clone(), index, factory, resources);
 
             let fence = resources.fences
                 .pop()
@@ -245,7 +298,6 @@ where
             });
 
             // Get all required resources.
-            let ref mut render = self.renders[active];
             let ref mut queue = resources.group.queues[self.queue];
 
             // Record and submit commands to draw frame.
@@ -253,10 +305,9 @@ where
                 queue,
                 &mut pool,
                 &self.backbuffer,
-                surface_frame,
+                frame.clone(),
                 &acquire,
                 &job.release,
-                viewport(self.surface.kind()),
                 &fence,
                 factory,
                 data,
@@ -271,44 +322,15 @@ where
                 acquire,
                 pool,
             });
-
-            // Enqueue frame.
-            self.frames.push_back(frame);
-        } else if !self.jobs.is_empty() {
-            // Target wants to stop processing.
-            // Wait for associated queue to become idle.
-            resources.group.queues[self.queue]
-                .wait_idle()
-                .expect("Device lost or something");
-
-            // Get all jobs
-            for Job { release, payload } in self.jobs.drain(..) {
-                if let Some(Payload {
-                    fence,
-                    mut pool,
-                    acquire,
-                    ..
-                }) = payload
-                {
-                    // reset fence and pool
-                    factory.reset_fence(&fence);
-                    pool.reset();
-
-                    // Reclaim fence, pool and semaphores
-                    resources.fences.push(fence);
-                    resources.pools.push(pool);
-                    resources.semaphores.push(acquire);
-                    resources.semaphores.push(release);
-                }
-            }
+        } else {
+            self.clean(factory, resources);
         }
     }
-}
 
-#[derive(Clone, Copy)]
-struct Frame {
-    index: usize,
-    started: u64,
+
+    fn dispose(mut self, factory: &mut Factory<B>, resources: &mut Resources<B>) {
+        self.clean(factory, resources);
+    }
 }
 
 struct Job<B: Backend> {
@@ -321,17 +343,6 @@ struct Payload<B: Backend> {
     fence: B::Fence,
     pool: CommandPool<B, General>,
 }
-
-fn viewport(kind: Kind) -> Viewport {
-    match kind {
-        Kind::D2(w, h, _, _) => Viewport {
-            rect: Rect { x: 0, y: 0, w: w as u16, h: h as u16 },
-            depth: 0.0..1.0,
-        },
-        _ => panic!("Unsupported surface kind"),
-    }
-}
-
 
 struct Resources<B: Backend> {
     group: QueueGroup<B, General>,
