@@ -253,6 +253,8 @@ where
         layers: SubresourceLayers,
         offset: Offset,
         extent: Extent,
+        data_width: u32,
+        data_height: u32,
         data: &[u8],
     ) -> Result<(), Error> {
         let ref device = self.device;
@@ -266,6 +268,8 @@ where
             layers,
             offset,
             extent,
+            data_width,
+            data_height,
             data,
         )?;
         self.reclamation

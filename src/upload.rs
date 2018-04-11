@@ -89,8 +89,17 @@ where
         layers: SubresourceLayers,
         offset: Offset,
         extent: Extent,
+        data_width: u32,
+        data_height: u32,
         data: &[u8],
     ) -> Result<SmartBuffer<B>, Error> {
+        // Check requirements.
+        // TODO: Return `Error` instead of panicking.
+        assert!(data_width >= extent.width);
+        assert!(data_height >= extent.height);
+        assert_eq!(layers.aspects.bits().count_ones(), 1);
+        assert!(data_width as usize * data_height as usize * extent.depth as usize <= data.len());
+
         let staging = allocator
             .create_buffer(
                 device,
@@ -124,13 +133,14 @@ where
             uploading_layout,
             Some(BufferImageCopy {
                 buffer_offset: 0,
-                buffer_width: 0,
-                buffer_height: 0,
+                buffer_width: data_width,
+                buffer_height: data_height,
                 image_layers: layers.clone(),
                 image_offset: offset,
                 image_extent: extent,
             }),
         );
+
         cbuf.pipeline_barrier(
             PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
             Dependencies::empty(),
