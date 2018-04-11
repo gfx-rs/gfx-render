@@ -1,4 +1,3 @@
-
 use hal::Instance;
 use hal::adapter::PhysicalDevice;
 use hal::queue::{General, QueueFamily, QueueType};
@@ -6,7 +5,7 @@ use mem::SmartAllocator;
 
 use std::string::ToString;
 
-use {Error};
+use Error;
 use backend::BackendEx;
 use factory::Factory;
 use renderer::Renderer;
@@ -14,11 +13,11 @@ use renderer::Renderer;
 const STAGING_TRESHOLD: usize = 32 * 1024; // 32kb
 
 /// Init chosen backend and create `Factory` and `Renderer` instances.
-/// 
+///
 /// # TODO
-/// 
+///
 /// Add config.
-/// 
+///
 pub fn init<B, R>() -> Result<(Factory<B>, Renderer<B, R>), Error>
 where
     B: BackendEx,

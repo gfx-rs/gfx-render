@@ -4,10 +4,10 @@ use std::slice::from_raw_parts_mut;
 
 use hal::{Backend, Device};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
-use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer,
-                   RawLevel};
+use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer, RawLevel};
 
-use hal::image::{Access as ImageAccess, Extent, Layout, Offset, SubresourceLayers, SubresourceRange};
+use hal::image::{Access as ImageAccess, Extent, Layout, Offset, SubresourceLayers,
+                 SubresourceRange};
 use hal::mapping::Error as MappingError;
 use hal::memory::{Barrier, Dependencies, Properties};
 use hal::pool::{CommandPoolCreateFlags, RawCommandPool};
@@ -110,11 +110,18 @@ where
                 data,
             );
         }
+
+        let uploading_layout = if layout == Layout::General {
+            Layout::General
+        } else {
+            Layout::TransferDstOptimal
+        };
+
         let cbuf = self.get_command_buffer(device);
         cbuf.copy_buffer_to_image(
             staging.borrow(),
             image.borrow_mut(),
-            Layout::TransferDstOptimal,
+            uploading_layout,
             Some(BufferImageCopy {
                 buffer_offset: 0,
                 buffer_width: 0,
@@ -125,16 +132,16 @@ where
             }),
         );
         cbuf.pipeline_barrier(
-            PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+            PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
             Dependencies::empty(),
             Some(Barrier::Image {
-                states: (ImageAccess::TRANSFER_WRITE, Layout::TransferDstOptimal) .. (access, layout),
+                states: (ImageAccess::TRANSFER_WRITE, uploading_layout)..(access, layout),
                 target: image.borrow_mut(),
                 range: SubresourceRange {
                     aspects: layers.aspects,
-                    levels: layers.level .. layers.level,
+                    levels: layers.level..layers.level,
                     layers: layers.layers,
-                }
+                },
             }),
         );
         Ok(staging)
@@ -195,10 +202,10 @@ where
             cbuf.update_buffer(buffer.borrow_mut(), offset, data);
 
             cbuf.pipeline_barrier(
-                PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+                PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
                 Dependencies::empty(),
                 Some(Barrier::Buffer {
-                    states: BufferAccess::TRANSFER_WRITE .. access,
+                    states: BufferAccess::TRANSFER_WRITE..access,
                     target: buffer.borrow_mut(),
                 }),
             );
@@ -234,10 +241,10 @@ where
                 }),
             );
             cbuf.pipeline_barrier(
-                PipelineStage::TRANSFER .. PipelineStage::TOP_OF_PIPE,
+                PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
                 Dependencies::empty(),
                 Some(Barrier::Buffer {
-                    states: BufferAccess::TRANSFER_WRITE .. access,
+                    states: BufferAccess::TRANSFER_WRITE..access,
                     target: buffer.borrow_mut(),
                 }),
             );
@@ -246,14 +253,13 @@ where
     }
 }
 
-
 /// Update cpu-visible block.
-/// 
+///
 /// # Safety
-/// 
+///
 /// Caller must be sure that memory of the block has `CPU_VISIBLE` property.
 /// `coherent` argument must be set to `true` only if memory of the block has `COHERENT` property.
-/// 
+///
 pub unsafe fn update_cpu_visible_block<B: Backend>(
     device: &B::Device,
     coherent: bool,
