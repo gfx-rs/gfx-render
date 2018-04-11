@@ -1,11 +1,10 @@
-
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
 use hal::{Backend, Device as HalDevice};
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
-use hal::queue::{General, QueueGroup, CommandQueue, RawCommandQueue, RawSubmission, Supports};
-use hal::window::{Backbuffer, FrameSync, Swapchain, SwapchainConfig, Frame};
+use hal::queue::{CommandQueue, General, QueueGroup, RawCommandQueue, RawSubmission, Supports};
+use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig};
 
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
@@ -24,11 +23,10 @@ pub trait Render<B: Backend, T> {
         release: &B::Semaphore,
         fence: &B::Fence,
         factory: &mut Factory<B>,
-        data: &mut T
+        data: &mut T,
     ) where
         C: Supports<General>;
 }
-
 
 #[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TargetId(u64);
@@ -82,11 +80,7 @@ where
     }
 
     /// Add graph to the render
-    pub fn set_render(
-        &mut self,
-        id: TargetId,
-        render: R,
-    ) -> Result<Option<R>, Error> {
+    pub fn set_render(&mut self, id: TargetId, render: R) -> Result<Option<R>, Error> {
         use std::mem::replace;
 
         let ref mut target = *self.targets
@@ -186,10 +180,17 @@ where
         self.queue.front().map(|&(_, index)| index)
     }
 
-    fn enqueue(&mut self, frame: Frame, index: u64, factory: &mut Factory<B>, resources: &mut Resources<B>) -> &mut Job<B> {
+    fn enqueue(
+        &mut self,
+        frame: Frame,
+        index: u64,
+        factory: &mut Factory<B>,
+        resources: &mut Resources<B>,
+    ) -> &mut Job<B> {
         while frame.id() >= self.jobs.len() {
             self.jobs.push(Job {
-                release: resources.semaphores
+                release: resources
+                    .semaphores
                     .pop()
                     .unwrap_or_else(|| factory.create_semaphore()),
                 payload: None,
@@ -263,7 +264,8 @@ where
     {
         if let Some(ref mut render) = self.render {
             // Get fresh semaphore.
-            let acquire = resources.semaphores
+            let acquire = resources
+                .semaphores
                 .pop()
                 .unwrap_or_else(|| factory.create_semaphore());
 
@@ -290,11 +292,16 @@ where
             // Enqueue frame.
             let job = self.jobs.enqueue(frame.clone(), index, factory, resources);
 
-            let fence = resources.fences
+            let fence = resources
+                .fences
                 .pop()
                 .unwrap_or_else(|| factory.create_fence(false));
             let mut pool = resources.pools.pop().unwrap_or_else(|| {
-                factory.create_command_pool_typed(&resources.group, CommandPoolCreateFlags::TRANSIENT, 1)
+                factory.create_command_pool_typed(
+                    &resources.group,
+                    CommandPoolCreateFlags::TRANSIENT,
+                    1,
+                )
             });
 
             // Get all required resources.
@@ -326,7 +333,6 @@ where
             self.clean(factory, resources);
         }
     }
-
 
     fn dispose(mut self, factory: &mut Factory<B>, resources: &mut Resources<B>) {
         self.clean(factory, resources);

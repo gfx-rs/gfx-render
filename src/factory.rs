@@ -5,7 +5,7 @@
 //! 4. Creating `Surface`s and fetching their capabilities.
 //! 5. Fetching `Features` and `Limits` of the GPU.
 //! All this packet into sendable and shareable `Factory` type.
-//! 
+//!
 
 use std::any::Any;
 use std::borrow::{Borrow, BorrowMut};
@@ -15,7 +15,8 @@ use std::ops::{Deref, DerefMut, Range};
 use hal::{Backend, Instance, Surface};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::format::Format;
-use hal::image::{Access as ImageAccess, Kind, Level, Extent, Layout, Offset, Usage as ImageUsage, StorageFlags, SubresourceLayers, Tiling};
+use hal::image::{Access as ImageAccess, Extent, Kind, Layout, Level, Offset, StorageFlags,
+                 SubresourceLayers, Tiling, Usage as ImageUsage};
 use hal::memory::Properties;
 use hal::queue;
 use hal::window::SurfaceCapabilities;
@@ -31,7 +32,6 @@ use reclamation::ReclamationQueue;
 use upload::Upload;
 
 pub use mem::Item as RelevantItem;
-
 
 /// Wrapper around raw gpu resource like `B::Buffer` or `B::Image`
 /// It will send raw resource back to the `Factory` if dropped.
@@ -98,7 +98,7 @@ pub type Image<B: Backend> = Item<B::Image, SmartBlock<B::Memory>>;
 /// 3. Uploading data to `Buffer`s and `Image`s.
 /// 4. Creating `Surface`s and fetching their capabilities.
 /// 5. Fetching `Features` and `Limits` of the GPU.
-/// 
+///
 pub struct Factory<B: Backend> {
     instance: Box<Instance<Backend = B>>,
     physical: B::PhysicalDevice,
@@ -116,12 +116,12 @@ where
     B: Backend,
 {
     /// Create new `Buffer`. Factory will allocate buffer from memory which has all requested properties and supports all requested usages.
-    /// 
+    ///
     /// # Parameters
     /// `size`          - size of buffer. Returned buffer _may_ be larger but never smaller.
     /// `properties`    - memory properties required for buffer.
     /// `usage`         - how buffer is supposed to be used. Caller must specify all usages and never use buffer otherwise.
-    /// 
+    ///
     pub fn create_buffer(
         &mut self,
         size: u64,
@@ -142,15 +142,15 @@ where
     }
 
     /// Create new `Image`. Factory will allocate buffer from memory which has all requested properties and supports all requested usages.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// `kind`          - image dimensions.
     /// `level`         - number of mim-levels.
     /// `format`        - format of the image.
     /// `properties`    - memory properties required for buffer.
     /// `usage`         - how buffer is supposed to be used. Caller must specify all usages and never use buffer otherwise.
-    /// 
+    ///
     pub fn create_image(
         &mut self,
         kind: Kind,
@@ -236,11 +236,11 @@ where
 
     /// Upload data to the image.
     /// Factory will use staging buffer to write data to the image.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// `image`     - where to upload. It must be created with `TRANSFER_DST` usage.
-    /// `layout`    - layout in which `Image` is during command execution (before next frame starts). It must be either `General` or `TransferDstOptimal`
+    /// `layout`    - layout in which `Image` will be after uploading.
     /// `layers`    - specific image subresources of the image used for the destination image data.
     /// `offset`    - offsets in texels of the sub-region of the destination image data.
     /// `extent`    - size in texels of the sub-region of the destination image data.
@@ -257,18 +257,26 @@ where
     ) -> Result<(), Error> {
         let ref device = self.device;
         let ref mut allocator = self.allocator;
-        let staging =
-            self.upload
-                .upload_image(device, allocator, &mut *image.inner, access, layout, layers, offset, extent, data)?;
+        let staging = self.upload.upload_image(
+            device,
+            allocator,
+            &mut *image.inner,
+            access,
+            layout,
+            layers,
+            offset,
+            extent,
+            data,
+        )?;
         self.reclamation
             .push(self.current, AnyItem::Buffer(staging));
         Ok(())
     }
 
     /// Create new `Surface`.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// `window`    - window handler which will be represented by new surface.
     pub fn create_surface(&mut self, window: &Window) -> B::Surface
     where
@@ -283,11 +291,11 @@ where
     /// Get capabilities and formats for surface.
     /// If formats are `None` then `Surface` has no preferences for formats.
     /// Otherwise `Swapchain` can be created only with one of formats returned by this function.
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// `surface`   - surface object which capabilities and supported formats are retrieved.
-    /// 
+    ///
     pub fn capabilities_and_formats(
         &self,
         surface: &B::Surface,

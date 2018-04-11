@@ -1,12 +1,14 @@
-
 extern crate crossbeam_channel;
+#[macro_use]
+extern crate error_chain;
 extern crate gfx_hal as hal;
 extern crate gfx_memory as mem;
-#[macro_use] extern crate error_chain;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate winit;
 
-#[cfg(not(any(feature = "gfx-backend-vulkan", feature = "gfx-backend-dx12", feature = "gfx-backend-metal")))]
+#[cfg(not(any(feature = "gfx-backend-vulkan", feature = "gfx-backend-dx12",
+              feature = "gfx-backend-metal")))]
 pub extern crate gfx_backend_empty as empty;
 
 #[cfg(feature = "gfx-backend-vulkan")]
@@ -28,7 +30,7 @@ mod init;
 
 pub use backend::BackendEx;
 pub use init::init;
-pub use factory::{Factory, Item, Buffer, Image};
-pub use renderer::{Renderer, Render, TargetId};
+pub use factory::{Buffer, Factory, Image, Item};
+pub use renderer::{Render, Renderer, TargetId};
 
 error_chain!{}

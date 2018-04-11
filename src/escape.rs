@@ -47,10 +47,10 @@ impl<T> DerefMut for Escape<T> {
 
 impl<T> Drop for Escape<T> {
     fn drop(&mut self) {
-        let value = unsafe {
-            read(&mut *self.value)
-        };
-        self.sender.send(value).unwrap_or_else(|value| forget(value));
+        let value = unsafe { read(&mut *self.value) };
+        self.sender
+            .send(value)
+            .unwrap_or_else(|value| forget(value));
     }
 }
 
