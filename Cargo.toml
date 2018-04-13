@@ -1,7 +1,10 @@
 [package]
 name = "gfx-render"
 version = "0.1.0"
-authors = ["omni-viral <scareaangel@gmail.com>"]
+authors = ["Zakarum <scareaangel@gmail.com>"]
+license = "MIT/Apache-2.0"
+repository = "https://github.com/gfx-rs/gfx-render.git"
+documentation = "https://docs.rs/crate/gfx-render/0.1.0/gfx-render"
 
 [dependencies]
 crossbeam-channel = "0.1"
