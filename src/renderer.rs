@@ -382,6 +382,7 @@ impl<B: 'static> AutoreleasePool<B> {
 
     #[inline(always)]
     fn reset(&mut self) {
+        use std::any::TypeId;
         if TypeId::of::<B>() == TypeId::of::<metal::Backend>() {
             unsafe {
                 self.autorelease.as_mut().unwrap().reset();
