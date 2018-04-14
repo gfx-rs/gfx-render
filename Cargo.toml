@@ -8,7 +8,7 @@ documentation = "https://docs.rs/crate/gfx-render/0.1.0/gfx-render"
 
 [dependencies]
 crossbeam-channel = "0.1"
-error-chain = "0.11"
+failure = "0.1"
 gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "efa0822a", features = ["serde"] }
 gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "5d0b31a0" }
 log = "0.4"

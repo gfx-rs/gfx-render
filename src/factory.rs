@@ -12,6 +12,8 @@ use std::borrow::{Borrow, BorrowMut};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut, Range};
 
+use failure::{Error, ResultExt};
+
 use hal::{Backend, Instance, Surface};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::format::Format;
@@ -25,7 +27,6 @@ use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type};
 
 use winit::Window;
 
-use Error;
 use backend::BackendEx;
 use escape::{Escape, Terminal};
 use reclamation::ReclamationQueue;
@@ -135,7 +136,7 @@ where
                 size,
                 usage,
             )
-            .map_err(|err| Error::with_chain(err, "Failed to create buffer"))?;
+            .with_context(|_| "Failed to create buffer")?;
         Ok(Item {
             inner: self.buffers.escape(buffer),
         })
@@ -172,7 +173,7 @@ where
                 usage,
                 storage_flags,
             )
-            .map_err(|err| Error::with_chain(err, "Failed to create image"))?;
+            .with_context(|_| "Failed to create image")?;
         Ok(Item {
             inner: self.images.escape(image),
         })

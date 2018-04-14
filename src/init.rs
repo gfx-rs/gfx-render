@@ -1,11 +1,12 @@
+
+
+use failure::Error;
+
 use hal::Instance;
 use hal::adapter::PhysicalDevice;
 use hal::queue::{General, QueueFamily, QueueType};
+
 use mem::SmartAllocator;
-
-use std::string::ToString;
-
-use Error;
 use backend::BackendEx;
 use factory::Factory;
 use renderer::Renderer;
@@ -23,6 +24,8 @@ where
     B: BackendEx,
     R: Send + Sync + 'static,
 {
+    use failure::err_msg;
+
     let instance = B::init();
     let mut adapter = instance.enumerate_adapters().remove(0);
     info!("Adapter {:#?}", adapter.info);
@@ -37,11 +40,10 @@ where
             .drain(..)
             .filter(|family| family.queue_type() == QueueType::General)
             .next()
-            .ok_or(format!("Can't find General queue family"))?;
+            .ok_or(err_msg("Can't find General queue family"))?;
         let mut gpu = adapter
             .physical_device
-            .open(vec![(&qf, vec![1.0; 1])])
-            .map_err(|err| err.to_string())?;
+            .open(vec![(&qf, vec![1.0; 1])])?;
         let queue_group = gpu.queues
             .take::<General>(qf.id())
             .expect("This group was requested");

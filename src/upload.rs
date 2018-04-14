@@ -2,6 +2,8 @@ use std::borrow::{Borrow, BorrowMut};
 use std::collections::VecDeque;
 use std::slice::from_raw_parts_mut;
 
+use failure::{Error, Fail, ResultExt};
+
 use hal::{Backend, Device};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer, RawLevel};
@@ -15,8 +17,6 @@ use hal::pso::PipelineStage;
 use hal::queue::QueueFamilyId;
 
 use mem::{Block, Factory, Item, SmartAllocator, SmartBlock, Type};
-
-use Error;
 
 type SmartBuffer<B: Backend> = Item<B::Buffer, SmartBlock<B::Memory>>;
 type SmartImage<B: Backend> = Item<B::Image, SmartBlock<B::Memory>>;
@@ -56,10 +56,7 @@ where
         data: &[u8],
     ) -> Result<Option<SmartBuffer<B>>, Error> {
         if buffer.size() < offset + data.len() as u64 {
-            return Err(Error::with_chain(
-                MappingError::OutOfBounds,
-                "Buffer upload failed",
-            ));
+            return Err(MappingError::OutOfBounds.context("Buffer upload failed").into())
         }
         let props = allocator.properties(buffer.block());
         if props.contains(Properties::CPU_VISIBLE) {
@@ -107,7 +104,7 @@ where
                 data.len() as u64,
                 BufferUsage::TRANSFER_SRC,
             )
-            .map_err(|err| Error::with_chain(err, "Failed to create staging buffer"))?;
+            .with_context(|_| "Failed to create staging buffer")?;
         let props = allocator.properties(staging.block());
         unsafe {
             // Safe due to block is allocated with `CPU_VISIBLE` property.
@@ -228,7 +225,7 @@ where
                     data.len() as u64,
                     BufferUsage::TRANSFER_SRC,
                 )
-                .map_err(|err| Error::with_chain(err, "Failed to create staging buffer"))?;
+                .with_context(|_| "Failed to create staging buffer")?;
             let props = allocator.properties(staging.block());
             unsafe {
                 // Safe due to block is allocated with `CPU_VISIBLE` property.

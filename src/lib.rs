@@ -1,6 +1,6 @@
 extern crate crossbeam_channel;
 #[macro_use]
-extern crate error_chain;
+extern crate failure;
 extern crate gfx_hal as hal;
 extern crate gfx_memory as mem;
 #[macro_use]
@@ -32,5 +32,3 @@ pub use backend::BackendEx;
 pub use init::init;
 pub use factory::{Buffer, Factory, Image, Item};
 pub use renderer::{Render, Renderer, TargetId};
-
-error_chain!{}

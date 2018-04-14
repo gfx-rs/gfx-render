@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
+use failure::Error;
+
 use hal::{Backend, Device as HalDevice};
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
 use hal::queue::{CommandQueue, General, QueueGroup, RawCommandQueue, RawSubmission, Supports};
@@ -9,7 +11,6 @@ use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig};
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
 
-use Error;
 use factory::Factory;
 
 pub trait Render<B: Backend, T> {
@@ -85,7 +86,7 @@ where
 
         let ref mut target = *self.targets
             .get_mut(&id)
-            .ok_or(format!("No render with id {:#?}", id))?;
+            .ok_or(format_err!("No render with id {:#?}", id))?;
         Ok(replace(&mut target.render, Some(render)))
     }
 
