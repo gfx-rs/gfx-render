@@ -83,7 +83,7 @@ where
     /// Add graph to the render
     pub fn set_render(&mut self, id: TargetId, render: R) -> Result<Option<R>, Error> {
         use std::mem::replace;
-
+ 
         let ref mut target = *self.targets
             .get_mut(&id)
             .ok_or(format_err!("No render with id {:#?}", id))?;

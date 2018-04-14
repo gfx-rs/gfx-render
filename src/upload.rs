@@ -35,6 +35,16 @@ impl<B> Upload<B>
 where
     B: Backend,
 {
+    pub fn dispose(mut self, device: &B::Device) {
+        self.clear(u64::max_value());
+        self.free.clear();
+        if let Some(mut pool) = self.pool {
+            pool.reset();
+            device.destroy_command_pool(pool);
+        }
+        assert!(self.used.is_empty());
+    }
+
     pub fn new(staging_threshold: usize, family: QueueFamilyId) -> Self {
         Upload {
             staging_threshold,
@@ -186,7 +196,7 @@ where
         cbuf.get_or_insert_with(|| {
             let mut cbuf = free.pop().unwrap_or_else(|| {
                 let pool = pool.get_or_insert_with(|| {
-                    device.create_command_pool(family, CommandPoolCreateFlags::empty())
+                    device.create_command_pool(family, CommandPoolCreateFlags::RESET_INDIVIDUAL)
                 });
                 pool.allocate(1, RawLevel::Primary).remove(0)
             });

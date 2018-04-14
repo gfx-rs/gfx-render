@@ -1,3 +1,4 @@
+
 #[derive(Debug)]
 struct ReclamationNode<I> {
     items: Vec<I>,
@@ -44,12 +45,21 @@ impl<I> ReclamationQueue<I> {
     where
         F: FnMut(I),
     {
-        for mut node in self.queue.drain(..(ongoing - self.offset) as usize) {
+        use std::cmp::min;
+        let clear_until = (ongoing - self.offset) as usize;
+        let clear_until = min(clear_until, self.queue.len());
+        for mut node in self.queue.drain(..clear_until) {
             for item in node.items.drain(..) {
                 f(item);
             }
             self.cache.push(node);
         }
         self.offset = ongoing;
+    }
+}
+
+impl<I> Drop for ReclamationQueue<I> {
+    fn drop(&mut self) {
+        assert!(self.queue.is_empty());
     }
 }

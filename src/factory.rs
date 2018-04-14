@@ -23,7 +23,7 @@ use hal::memory::Properties;
 use hal::queue;
 use hal::window::SurfaceCapabilities;
 
-use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type};
+use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type, MemoryAllocator};
 
 use winit::Window;
 
@@ -116,6 +116,32 @@ impl<B> Factory<B>
 where
     B: Backend,
 {
+    /// Dispose of factory.
+    pub fn dispose(mut self) {
+        let end_of_times = u64::max_value() - 1;
+        self.current = end_of_times;
+        debug!("Dispose of `Factory`");
+        unsafe {
+            debug!("Advance to the end of times");
+            self.advance(end_of_times);
+        }
+
+        debug!("Dispose terminals");
+        self.buffers.dispose();
+        self.images.dispose();
+
+        debug!("Drop reclamation queue");
+        drop(self.reclamation);
+
+        debug!("Dispose of uploader.");
+        self.upload.dispose(&self.device);
+
+        debug!("Dispose of allocator.");
+        self.allocator.dispose(&self.device).expect("Allocator is cleared");
+
+
+    }
+
     /// Create new `Buffer`. Factory will allocate buffer from memory which has all requested properties and supports all requested usages.
     ///
     /// # Parameters
@@ -308,7 +334,7 @@ where
         surface.capabilities_and_formats(&self.physical)
     }
 
-    /// Construct `Factory` from its parts.
+    /// Construct `Factory` from parts.
     pub fn new(
         instance: B::Instance,
         physical: B::PhysicalDevice,

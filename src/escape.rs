@@ -6,7 +6,7 @@
 use std::mem::{forget, ManuallyDrop};
 use std::ops::{Deref, DerefMut};
 use std::ptr::read;
-use crossbeam_channel::{unbounded, Receiver, Sender, TryIter};
+use crossbeam_channel::{unbounded, Receiver, Sender, TryIter, TryRecvError};
 
 /// Wraps value of any type and send it to the `Terminal` from which the wrapper was created.
 /// In case `Terminal` is already dropped then value will be cast into oblivion via `std::mem::forget`.
@@ -73,6 +73,17 @@ impl<T> Terminal<T> {
     pub fn new() -> Self {
         let (sender, receiver) = unbounded();
         Terminal { sender, receiver }
+    }
+
+    /// Dispose of the `Terminal`
+    pub fn dispose(self) {
+        drop(self.sender);
+        match self.receiver.try_recv() {
+            Err(TryRecvError::Disconnected) => {}
+            _ => {
+                panic!("Terminal must be dropped after all `Escape`s");
+            }
+        }
     }
 
     /// Wrap the value. It will be yielded by iterator returned by `Terminal::drain` if `Escape` will be dropped.
