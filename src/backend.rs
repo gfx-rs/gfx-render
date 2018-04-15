@@ -30,9 +30,10 @@ pub trait BackendEx: Backend {
 impl BackendEx for vulkan::Backend {
     type Instance = vulkan::Instance;
     fn init() -> Self::Instance {
-        vulkan::Instance::create("amethyst", 1)
+        vulkan::Instance::create("gfx-render", 1)
     }
     fn create_surface(instance: &Self::Instance, window: &Window) -> Self::Surface {
+        trace!("vulkan::Backend::create_surface");
         instance.create_surface(window)
     }
 }
@@ -41,9 +42,10 @@ impl BackendEx for vulkan::Backend {
 impl BackendEx for metal::Backend {
     type Instance = metal::Instance;
     fn init() -> Self::Instance {
-        metal::Instance::create("amethyst", 1)
+        metal::Instance::create("gfx-render", 1)
     }
     fn create_surface(instance: &Self::Instance, window: &Window) -> Self::Surface {
+        trace!("metal::Backend::create_surface");
         instance.create_surface(window)
     }
 }
@@ -52,9 +54,10 @@ impl BackendEx for metal::Backend {
 impl BackendEx for dx12::Backend {
     type Instance = dx12::Instance;
     fn init() -> Self::Instance {
-        dx12::Instance::create("amethyst", 1)
+        dx12::Instance::create("gfx-render", 1)
     }
     fn create_surface(instance: &Self::Instance, window: &Window) -> Self::Surface {
+        trace!("dx12::Backend::create_surface");
         instance.create_surface(window)
     }
 }
@@ -67,6 +70,7 @@ impl BackendEx for empty::Backend {
         empty::Instance
     }
     fn create_surface(_: &Self::Instance, _: &Window) -> Self::Surface {
+        trace!("empty::Backend::create_surface");
         empty::Surface
     }
 }

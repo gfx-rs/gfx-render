@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
-use failure::Error;
+use failure::{Error, Fail, ResultExt};
 
 use hal::{Backend, Device as HalDevice};
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
@@ -14,10 +14,10 @@ use metal;
 use factory::Factory;
 
 pub trait Render<B: Backend, T> {
-    fn render<C>(
+    fn render(
         &mut self,
-        queue: &mut CommandQueue<B, C>,
-        pool: &mut CommandPool<B, C>,
+        queue: &mut CommandQueue<B, General>,
+        pool: &mut CommandPool<B, General>,
         backbuffer: &Backbuffer<B>,
         frame: Frame,
         acquire: &B::Semaphore,
@@ -25,8 +25,7 @@ pub trait Render<B: Backend, T> {
         fence: &B::Fence,
         factory: &mut Factory<B>,
         data: &mut T,
-    ) where
-        C: Supports<General>;
+    );
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
@@ -44,6 +43,14 @@ impl<B, R> Renderer<B, R>
 where
     B: Backend,
 {
+    /// Dispose of the renderer.
+    pub fn dispose(mut self, factory: &mut Factory<B>) {
+        for (_, target) in self.targets {
+            target.dispose(factory, &mut self.resources);
+        }
+        self.resources.dispose(&*factory);
+    }
+
     /// Creates new render
     pub fn add_target(
         &mut self,
@@ -76,18 +83,28 @@ where
     }
 
     /// Remove render
-    pub fn remove_target(&mut self, _id: TargetId) {
-        unimplemented!()
+    pub fn remove_target(&mut self, id: TargetId, factory: &mut Factory<B>) {
+        if let Some(target) = self.targets.remove(&id) {
+            target.dispose(factory, &mut self.resources);
+        }
     }
 
     /// Add graph to the render
-    pub fn set_render(&mut self, id: TargetId, render: R) -> Result<Option<R>, Error> {
+    pub fn set_render<F, E>(&mut self, id: TargetId, render: F) -> Result<(), Error>
+    where
+        F: FnOnce(&Backbuffer<B>) -> Result<R, E>,
+        E: Fail,
+    {
         use std::mem::replace;
  
         let ref mut target = *self.targets
             .get_mut(&id)
-            .ok_or(format_err!("No render with id {:#?}", id))?;
-        Ok(replace(&mut target.render, Some(render)))
+            .ok_or(format_err!("No target with id {:#?}", id))?;
+
+        let render = render(&target.backbuffer)
+            .with_context(|_| format!("Failed to build `Render` for target: {:?}", id))?;
+        target.render = Some(render);
+        Ok(())
     }
 
     /// Create new render system providing it with general queue group and surfaces to draw onto
@@ -125,15 +142,15 @@ where
         }
 
         // walk over job_queue and find earliest
-        let earliest = self.targets
+        if let Some(earliest) = self.targets
             .values()
             .filter_map(|target| target.jobs.earliest())
-            .min()
-            .unwrap();
+            .min() {
 
-        unsafe {
-            // cleanup after finished jobs.
-            factory.advance(earliest);
+            unsafe {
+                // cleanup after finished jobs.
+                factory.advance(earliest);
+            }
         }
 
         self.autorelease.reset();
@@ -356,6 +373,23 @@ struct Resources<B: Backend> {
     pools: Vec<CommandPool<B, General>>,
     fences: Vec<B::Fence>,
     semaphores: Vec<B::Semaphore>,
+}
+
+impl<B> Resources<B>
+where
+    B: Backend,
+{
+    fn dispose(self, device: &B::Device) {
+        for semaphore in self.semaphores {
+            device.destroy_semaphore(semaphore);
+        }
+        for fence in self.fences {
+            device.destroy_fence(fence);
+        }
+        for pool in self.pools {
+            device.destroy_command_pool(pool.downgrade());
+        }
+    }
 }
 
 struct AutoreleasePool<B> {

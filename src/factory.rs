@@ -7,9 +7,11 @@
 //! All this packet into sendable and shareable `Factory` type.
 //!
 
+
 use std::any::Any;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::Debug;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut, Range};
 
 use failure::{Error, ResultExt};
@@ -101,47 +103,43 @@ pub type Image<B: Backend> = Item<B::Image, SmartBlock<B::Memory>>;
 /// 5. Fetching `Features` and `Limits` of the GPU.
 ///
 pub struct Factory<B: Backend> {
-    instance: Box<Instance<Backend = B>>,
+    instance: Box<Any + Send + Sync>,
     physical: B::PhysicalDevice,
     device: B::Device,
-    allocator: SmartAllocator<B>,
+    allocator: ManuallyDrop<SmartAllocator<B>>,
     reclamation: ReclamationQueue<AnyItem<B>>,
     current: u64,
-    upload: Upload<B>,
+    upload: ManuallyDrop<Upload<B>>,
     buffers: Terminal<RelevantBuffer<B>>,
     images: Terminal<RelevantImage<B>>,
 }
 
-impl<B> Factory<B>
+impl<B> Drop for Factory<B>
 where
     B: Backend,
 {
-    /// Dispose of factory.
-    pub fn dispose(mut self) {
+    fn drop(&mut self) {
+        use std::ptr::read;
+
         let end_of_times = u64::max_value() - 1;
         self.current = end_of_times;
         debug!("Dispose of `Factory`");
         unsafe {
             debug!("Advance to the end of times");
             self.advance(end_of_times);
+            debug!("Dispose of uploader.");
+            read(&mut *self.upload).dispose(&self.device);
+
+            debug!("Dispose of allocator.");
+            read(&mut *self.allocator).dispose(&self.device).expect("Allocator is cleared");
         }
-
-        debug!("Dispose terminals");
-        self.buffers.dispose();
-        self.images.dispose();
-
-        debug!("Drop reclamation queue");
-        drop(self.reclamation);
-
-        debug!("Dispose of uploader.");
-        self.upload.dispose(&self.device);
-
-        debug!("Dispose of allocator.");
-        self.allocator.dispose(&self.device).expect("Allocator is cleared");
-
-
     }
+}
 
+impl<B> Factory<B>
+where
+    B: Backend,
+{
     /// Create new `Buffer`. Factory will allocate buffer from memory which has all requested properties and supports all requested usages.
     ///
     /// # Parameters
@@ -313,10 +311,10 @@ where
     where
         B: BackendEx,
     {
-        B::create_surface(
-            Any::downcast_ref::<B::Instance>(&self.instance).unwrap(),
-            window,
-        )
+        use std::any::TypeId;
+        trace!("Factory<{:?}>::create_surface", TypeId::of::<B>());
+        let surface = Any::downcast_ref::<B::Instance>(&*self.instance).unwrap();
+        B::create_surface(surface, window)
     }
 
     /// Get capabilities and formats for surface.
@@ -350,10 +348,10 @@ where
             instance: Box::new(instance),
             physical: physical.into(),
             device: device.into(),
-            allocator,
+            allocator: ManuallyDrop::new(allocator),
             reclamation: ReclamationQueue::new(),
             current: 0,
-            upload: Upload::new(staging_threshold, upload_family),
+            upload: ManuallyDrop::new(Upload::new(staging_threshold, upload_family)),
             buffers: Terminal::new(),
             images: Terminal::new(),
         }

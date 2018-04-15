@@ -59,7 +59,7 @@ impl<T> Drop for Escape<T> {
 #[derive(Debug)]
 pub struct Terminal<T> {
     receiver: Receiver<T>,
-    sender: Sender<T>,
+    sender: ManuallyDrop<Sender<T>>,
 }
 
 impl<T> Default for Terminal<T> {
@@ -72,30 +72,33 @@ impl<T> Terminal<T> {
     /// Create new `Terminal`.
     pub fn new() -> Self {
         let (sender, receiver) = unbounded();
-        Terminal { sender, receiver }
-    }
-
-    /// Dispose of the `Terminal`
-    pub fn dispose(self) {
-        drop(self.sender);
-        match self.receiver.try_recv() {
-            Err(TryRecvError::Disconnected) => {}
-            _ => {
-                panic!("Terminal must be dropped after all `Escape`s");
-            }
-        }
+        Terminal { sender: ManuallyDrop::new(sender), receiver }
     }
 
     /// Wrap the value. It will be yielded by iterator returned by `Terminal::drain` if `Escape` will be dropped.
     pub fn escape(&self, value: T) -> Escape<T> {
         Escape {
             value: ManuallyDrop::new(value),
-            sender: self.sender.clone(),
+            sender: Sender::clone(&self.sender),
         }
     }
 
     /// Get iterator over values from dropped `Escape` instances that was created by this `Terminal`.
     pub fn drain(&mut self) -> TryIter<T> {
         self.receiver.try_iter()
+    }
+}
+
+impl<T> Drop for Terminal<T> {
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.sender);
+            match self.receiver.try_recv() {
+                Err(TryRecvError::Disconnected) => {}
+                _ => {
+                    panic!("Terminal must be dropped after all `Escape`s");
+                }
+            }
+        }
     }
 }
