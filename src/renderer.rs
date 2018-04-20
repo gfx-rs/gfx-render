@@ -4,9 +4,11 @@ use std::marker::PhantomData;
 use failure::{Error, Fail, ResultExt};
 
 use hal::{Backend, Device as HalDevice};
+use hal::image::Extent;
 use hal::pool::{CommandPool, CommandPoolCreateFlags};
 use hal::queue::{CommandQueue, General, QueueGroup, RawCommandQueue, RawSubmission, Supports};
-use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig};
+use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig, Extent2D};
+use winit::Window;
 
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
@@ -26,6 +28,8 @@ pub trait Render<B: Backend, T> {
         factory: &mut Factory<B>,
         data: &mut T,
     );
+
+    fn dispose(self, factory: &mut Factory<B>, data: &mut T);
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
@@ -37,6 +41,7 @@ pub struct Renderer<B: Backend, R> {
     targets: HashMap<TargetId, Target<B, R>>,
     resources: Resources<B>,
     counter: u64,
+    retire_renders: Vec<(u64, R)>,
 }
 
 impl<B, R> Renderer<B, R>
@@ -44,9 +49,12 @@ where
     B: Backend,
 {
     /// Dispose of the renderer.
-    pub fn dispose(mut self, factory: &mut Factory<B>) {
-        for (_, target) in self.targets {
-            target.dispose(factory, &mut self.resources);
+    pub fn dispose<T>(mut self, factory: &mut Factory<B>, data: &mut T)
+    where
+        R: Render<B, T>,
+    {
+        for (render, target) in self.targets {
+            target.dispose(factory, &mut self.resources, data);
         }
         self.resources.dispose(&*factory);
     }
@@ -83,27 +91,36 @@ where
     }
 
     /// Remove render
-    pub fn remove_target(&mut self, id: TargetId, factory: &mut Factory<B>) {
+    pub fn remove_target<T>(&mut self, id: TargetId, factory: &mut Factory<B>, data: &mut T)
+    where
+        R: Render<B, T>,
+    {
         if let Some(target) = self.targets.remove(&id) {
-            target.dispose(factory, &mut self.resources);
+            target.dispose(factory, &mut self.resources, data);
         }
     }
 
     /// Add graph to the render
-    pub fn set_render<F, E>(&mut self, id: TargetId, render: F) -> Result<(), Error>
+    pub fn set_render<F, E>(&mut self, id: TargetId, window: &Window, factory: &mut Factory<B>, render: F) -> Result<(), Error>
     where
-        F: FnOnce(&Backbuffer<B>) -> Result<R, E>,
+        F: FnOnce(&Backbuffer<B>, Extent2D, &mut Factory<B>) -> Result<R, E>,
         E: Fail,
     {
+        use failure::err_msg;
         use std::mem::replace;
- 
+
         let ref mut target = *self.targets
             .get_mut(&id)
             .ok_or(format_err!("No target with id {:#?}", id))?;
 
-        let render = render(&target.backbuffer)
-            .with_context(|_| format!("Failed to build `Render` for target: {:?}", id))?;
-        target.render = Some(render);
+        let (width, height) = window.get_inner_size().ok_or(err_msg("Window is destroyed"))?;
+        let extent = Extent2D {
+            width,
+            height,
+        };
+        let render = render(&target.backbuffer, extent, factory).with_context(|_| format!("Failed to build `Render` for target: {:?}", id))?;
+        let old = replace(&mut target.render, Some(render));
+        self.retire_renders.extend(old.map(|render| (factory.current(), render)));
         Ok(())
     }
 
@@ -126,10 +143,11 @@ where
                 fences: Vec::new(),
                 semaphores: Vec::new(),
             },
+            retire_renders: Vec::new(),
         }
     }
 
-    pub fn run<T>(&mut self, data: &mut T, factory: &mut Factory<B>)
+    pub fn run<T>(&mut self, factory: &mut Factory<B>, data: &mut T)
     where
         B: Backend,
         R: Render<B, T>,
@@ -352,8 +370,12 @@ where
         }
     }
 
-    fn dispose(mut self, factory: &mut Factory<B>, resources: &mut Resources<B>) {
+    fn dispose<T>(mut self, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T)
+    where
+        R: Render<B, T>,
+    {
         self.clean(factory, resources);
+        self.render.map(|render| render.dispose(factory, data));
     }
 }
 

@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut, Range};
 
 use failure::{Error, ResultExt};
 
-use hal::{Backend, Instance, Surface};
+use hal::{Backend, Device, Instance, Surface};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::format::Format;
 use hal::image::{Access as ImageAccess, Extent, Kind, Layout, Level, Offset, StorageFlags,
@@ -102,10 +102,10 @@ pub type Image<B: Backend> = Item<B::Image, SmartBlock<B::Memory>>;
 /// 4. Creating `Surface`s and fetching their capabilities.
 /// 5. Fetching `Features` and `Limits` of the GPU.
 ///
-pub struct Factory<B: Backend> {
+pub struct Factory<B: Backend<Device = D>, D: Device<B> = <B as Backend>::Device> {
     instance: Box<Any + Send + Sync>,
     physical: B::PhysicalDevice,
-    device: B::Device,
+    device: D,
     allocator: ManuallyDrop<SmartAllocator<B>>,
     reclamation: ReclamationQueue<AnyItem<B>>,
     current: u64,
@@ -114,9 +114,10 @@ pub struct Factory<B: Backend> {
     images: Terminal<RelevantImage<B>>,
 }
 
-impl<B> Drop for Factory<B>
+impl<B, D> Drop for Factory<B, D>
 where
-    B: Backend,
+    B: Backend<Device = D>,
+    D: Device<B>,
 {
     fn drop(&mut self) {
         use std::ptr::read;
@@ -125,13 +126,14 @@ where
         self.current = end_of_times;
         debug!("Dispose of `Factory`");
         unsafe {
-            debug!("Advance to the end of times");
-            self.advance(end_of_times);
             debug!("Dispose of uploader.");
             read(&mut *self.upload).dispose(&self.device);
 
+            debug!("Advance to the end of times");
+            self.advance(end_of_times);
+
             debug!("Dispose of allocator.");
-            read(&mut *self.allocator).dispose(&self.device).expect("Allocator is cleared");
+            read(&mut *self.allocator).dispose(&self.device).expect("Allocator must be cleared");
         }
     }
 }
@@ -407,6 +409,28 @@ where
     B: Backend,
 {
     fn deref_mut(&mut self) -> &mut B::Device {
+        &mut self.device
+    }
+}
+
+
+
+impl<B, D> Borrow<D> for Factory<B, D>
+where
+    B: Backend<Device = D>,
+    D: Device<B>,
+{
+    fn borrow(&self) -> &D {
+        &self.device
+    }
+}
+
+impl<B, D> BorrowMut<D> for Factory<B, D>
+where
+    B: Backend<Device = D>,
+    D: Device<B>,
+{
+    fn borrow_mut(&mut self) -> &mut D {
         &mut self.device
     }
 }

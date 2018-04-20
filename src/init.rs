@@ -28,13 +28,13 @@ where
 
     let instance = B::init();
     let mut adapter = instance.enumerate_adapters().remove(0);
-    info!("Adapter {:#?}", adapter.info);
+    trace!("Adapter {:#?}", adapter.info);
 
-    info!("Device features: {:#?}", adapter.physical_device.features());
-    info!("Device limits: {:#?}", adapter.physical_device.limits());
+    trace!("Device features: {:#?}", adapter.physical_device.features());
+    trace!("Device limits: {:#?}", adapter.physical_device.limits());
 
     let (device, queue_group) = {
-        info!("Queue families: {:#?}", adapter.queue_families);
+        trace!("Queue families: {:#?}", adapter.queue_families);
         let qf = adapter
             .queue_families
             .drain(..)
@@ -49,7 +49,7 @@ where
             .expect("This group was requested");
         (gpu.device, queue_group)
     };
-    info!("Logical device created");
+    trace!("Logical device created");
 
     let allocator = SmartAllocator::<B>::new(
         adapter.physical_device.memory_properties(),
@@ -58,7 +58,7 @@ where
         32,
         1024 * 1024 * 64,
     );
-    info!("Allocator created: {:#?}", allocator);
+    trace!("Allocator created: {:#?}", allocator);
 
     let factory = Factory::new(
         instance,
