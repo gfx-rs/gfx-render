@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut, Range};
 
 use failure::{Error, ResultExt};
 
-use hal::{Backend, Device, Instance, Surface};
+use hal::{Backend, Device, Instance, Surface, Limits, Features, PhysicalDevice};
 use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
 use hal::format::Format;
 use hal::image::{Access as ImageAccess, Extent, Kind, Layout, Level, Offset, StorageFlags,
@@ -362,6 +362,16 @@ where
     /// Borrow both `Device` and `SmartAllocator` from the `Factory`.
     pub fn device_and_allocator(&mut self) -> (&B::Device, &mut SmartAllocator<B>) {
         (self.device.borrow(), &mut self.allocator)
+    }
+
+    /// Get features supported by hardware.
+    pub fn features(&self) -> Features {
+        self.physical.features()
+    }
+
+    /// Get hardware specific limits.
+    pub fn limits(&self) -> Limits {
+        self.physical.limits()
     }
 
     /// Fetch command buffer with uploads recorded.
