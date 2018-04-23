@@ -200,7 +200,7 @@ where
                 });
                 pool.allocate(1, RawLevel::Primary).remove(0)
             });
-            cbuf.begin(CommandBufferFlags::empty());
+            cbuf.begin(CommandBufferFlags::ONE_TIME_SUBMIT, Default::default());
             cbuf
         })
     }

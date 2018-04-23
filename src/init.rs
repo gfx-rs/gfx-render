@@ -43,7 +43,7 @@ where
             .ok_or(err_msg("Can't find General queue family"))?;
         let mut gpu = adapter
             .physical_device
-            .open(vec![(&qf, vec![1.0; 1])])?;
+            .open(&[(&qf, &[1.0])])?;
         let queue_group = gpu.queues
             .take::<General>(qf.id())
             .expect("This group was requested");

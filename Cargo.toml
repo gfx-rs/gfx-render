@@ -9,18 +9,18 @@ documentation = "https://docs.rs/crate/gfx-render/0.1.0/gfx-render"
 [dependencies]
 crossbeam-channel = "0.1"
 failure = "0.1"
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "efa0822a", features = ["serde"] }
-gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "06d15719" }
+gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "1083ce9a", features = ["serde"] }
+gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "9125d94e" }
 log = "0.4"
-winit = "= 0.11"
+winit = "0.12"
 
-gfx-backend-empty = { version = "0.1", git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
+gfx-backend-empty = { version = "0.1", git = "https://github.com/gfx-rs/gfx", rev = "1083ce9a" }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
+gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "1083ce9a" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
+gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "1083ce9a" }
 
 [target.'cfg(windows)'.dependencies]
-gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "efa0822a" }
+gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "1083ce9a" }
