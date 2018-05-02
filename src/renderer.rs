@@ -183,7 +183,7 @@ where
                 unimplemented!("Upload in multiqueue environment is not supported yet");
             }
             unsafe {
-                self.resources.group.queues[0].as_mut().submit_raw(
+                self.resources.group.queues[0].as_raw_mut().submit_raw(
                     RawSubmission {
                         cmd_buffers: Some(cbuf),
                         wait_semaphores: &[],
@@ -409,7 +409,7 @@ where
             device.destroy_fence(fence);
         }
         for pool in self.pools {
-            device.destroy_command_pool(pool.downgrade());
+            device.destroy_command_pool(pool.into_raw());
         }
     }
 }
