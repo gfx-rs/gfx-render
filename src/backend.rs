@@ -15,10 +15,6 @@ use metal;
 #[cfg(feature = "gfx-backend-dx12")]
 use dx12;
 
-#[cfg(not(any(feature = "gfx-backend-vulkan", feature = "gfx-backend-metal",
-              feature = "gfx-backend-dx12")))]
-use empty;
-
 /// Extend backend trait with initialization method and surface creation method.
 pub trait BackendEx: Backend {
     type Instance: Instance<Backend = Self> + Send + Sync;
@@ -59,18 +55,5 @@ impl BackendEx for dx12::Backend {
     fn create_surface(instance: &Self::Instance, window: &Window) -> Self::Surface {
         trace!("dx12::Backend::create_surface");
         instance.create_surface(window)
-    }
-}
-
-#[cfg(not(any(feature = "gfx-backend-vulkan", feature = "gfx-backend-metal",
-              feature = "gfx-backend-dx12")))]
-impl BackendEx for empty::Backend {
-    type Instance = empty::Instance;
-    fn init() -> Self::Instance {
-        empty::Instance
-    }
-    fn create_surface(_: &Self::Instance, _: &Window) -> Self::Surface {
-        trace!("empty::Backend::create_surface");
-        empty::Surface
     }
 }

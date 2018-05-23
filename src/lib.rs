@@ -8,10 +8,6 @@ extern crate gfx_memory as mem;
 extern crate log;
 extern crate winit;
 
-#[cfg(not(any(feature = "gfx-backend-vulkan", feature = "gfx-backend-dx12",
-              feature = "gfx-backend-metal")))]
-pub extern crate gfx_backend_empty as empty;
-
 #[cfg(feature = "gfx-backend-vulkan")]
 pub extern crate gfx_backend_vulkan as vulkan;
 

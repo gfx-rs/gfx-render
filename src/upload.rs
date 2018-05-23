@@ -1,6 +1,7 @@
 use std::borrow::{Borrow, BorrowMut};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::slice::from_raw_parts_mut;
+use std::fmt;
 
 use failure::{Error, Fail, ResultExt};
 
@@ -18,17 +19,41 @@ use hal::queue::QueueFamilyId;
 
 use mem::{Block, Factory, Item, SmartAllocator, SmartBlock, Type};
 
-type SmartBuffer<B: Backend> = Item<B::Buffer, SmartBlock<B::Memory>>;
-type SmartImage<B: Backend> = Item<B::Image, SmartBlock<B::Memory>>;
+type SmartBuffer<B> = Item<<B as Backend>::Buffer, SmartBlock<<B as Backend>::Memory>>;
+type SmartImage<B> = Item<<B as Backend>::Image, SmartBlock<<B as Backend>::Memory>>;
+
+
+#[derive(Debug)]
+struct FamilyDebug {
+    cbuf: bool,
+    free: usize,
+    used: usize,
+}
+
+struct Family<B: Backend> {
+    pool: B::CommandPool,
+    cbuf: Option<B::CommandBuffer>,
+    free: Vec<B::CommandBuffer>,
+    used: VecDeque<(B::CommandBuffer, u64)>,
+}
+
+impl<B> fmt::Debug for Family<B>
+where
+    B: Backend,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&FamilyDebug {
+            cbuf: self.cbuf.is_some(),
+            free: self.free.len(),
+            used: self.used.len(),
+        }, fmt)
+    }
+}
 
 #[derive(Debug)]
 pub struct Upload<B: Backend> {
     staging_threshold: usize,
-    family: QueueFamilyId,
-    pool: Option<B::CommandPool>,
-    cbuf: Option<B::CommandBuffer>,
-    free: Vec<B::CommandBuffer>,
-    used: VecDeque<(B::CommandBuffer, u64)>,
+    families: HashMap<QueueFamilyId, Family<B>>,
 }
 
 impl<B> Upload<B>
@@ -37,22 +62,21 @@ where
 {
     pub fn dispose(mut self, device: &B::Device) {
         self.clear(u64::max_value());
-        self.free.clear();
-        if let Some(mut pool) = self.pool {
-            pool.reset();
-            device.destroy_command_pool(pool);
+
+        for (_, mut family) in self.families {
+            family.free.clear();
+            assert!(family.used.is_empty());
+            unsafe {
+                family.pool.free(family.cbuf.into_iter().chain(family.free).collect());
+            }
+            device.destroy_command_pool(family.pool);
         }
-        assert!(self.used.is_empty());
     }
 
-    pub fn new(staging_threshold: usize, family: QueueFamilyId) -> Self {
+    pub fn new(staging_threshold: usize) -> Self {
         Upload {
             staging_threshold,
-            family,
-            pool: None,
-            cbuf: None,
-            free: Vec::new(),
-            used: VecDeque::new(),
+            families: HashMap::new(),
         }
     }
 
@@ -61,6 +85,7 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         buffer: &mut SmartBuffer<B>,
+        fid: QueueFamilyId,
         access: BufferAccess,
         offset: u64,
         data: &[u8],
@@ -82,7 +107,7 @@ where
             }
             Ok(None)
         } else {
-            self.upload_device_local_buffer(device, allocator, buffer, access, offset, data)
+            self.upload_device_local_buffer(device, allocator, buffer, fid, access, offset, data)
         }
     }
 
@@ -91,6 +116,7 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         image: &mut SmartImage<B>,
+        fid: QueueFamilyId,
         access: ImageAccess,
         layout: Layout,
         layers: SubresourceLayers,
@@ -133,7 +159,7 @@ where
             Layout::TransferDstOptimal
         };
 
-        let cbuf = self.get_command_buffer(device);
+        let cbuf = self.get_command_buffer(device, fid);
         cbuf.copy_buffer_to_image(
             staging.borrow(),
             image.borrow_mut(),
@@ -164,40 +190,46 @@ where
         Ok(staging)
     }
 
-    pub fn uploads(&mut self, frame: u64) -> Option<(&mut B::CommandBuffer, QueueFamilyId)> {
-        if let Some(mut cbuf) = self.cbuf.take() {
-            cbuf.finish();
-            self.used.push_back((cbuf, frame));
-            Some((&mut self.used.back_mut().unwrap().0, self.family))
-        } else {
-            None
-        }
+    #[inline]
+    pub fn uploads(&mut self, frame: u64) -> impl Iterator<Item = (&mut B::CommandBuffer, QueueFamilyId)> {
+        self.families.iter_mut().filter_map(move |(&fid, family)| {
+            if let Some(mut cbuf) = family.cbuf.take() {
+                cbuf.finish();
+                family.used.push_back((cbuf, frame));
+                Some((&mut family.used.back_mut().unwrap().0, fid))
+            } else {
+                None
+            }
+        })
     }
 
     pub fn clear(&mut self, ongoing: u64) {
-        while let Some((mut cbuf, frame)) = self.used.pop_front() {
-            if frame >= ongoing {
-                self.used.push_front((cbuf, ongoing));
-                break;
+        self.families.iter_mut().for_each(|(_, family)| {
+            while let Some((mut cbuf, frame)) = family.used.pop_front() {
+                if frame >= ongoing {
+                    family.used.push_front((cbuf, ongoing));
+                    break;
+                }
+                cbuf.reset(true);
+                family.free.push(cbuf);
             }
-            cbuf.reset(true);
-            self.free.push(cbuf);
-        }
+        });
     }
 
-    fn get_command_buffer<'a>(&'a mut self, device: &B::Device) -> &'a mut B::CommandBuffer {
-        let Upload {
-            family,
+    fn get_command_buffer<'a>(&'a mut self, device: &B::Device, fid: QueueFamilyId) -> &'a mut B::CommandBuffer {
+        let Family {
             ref mut pool,
-            ref mut free,
             ref mut cbuf,
+            ref mut free,
             ..
-        } = *self;
+        } = *self.families.entry(fid).or_insert(Family {
+            pool: device.create_command_pool(fid, CommandPoolCreateFlags::RESET_INDIVIDUAL),
+            cbuf: None,
+            free: Vec::new(),
+            used: VecDeque::new(),
+        });
         cbuf.get_or_insert_with(|| {
             let mut cbuf = free.pop().unwrap_or_else(|| {
-                let pool = pool.get_or_insert_with(|| {
-                    device.create_command_pool(family, CommandPoolCreateFlags::RESET_INDIVIDUAL)
-                });
                 pool.allocate(1, RawLevel::Primary).remove(0)
             });
             cbuf.begin(CommandBufferFlags::ONE_TIME_SUBMIT, Default::default());
@@ -210,12 +242,13 @@ where
         device: &B::Device,
         allocator: &mut SmartAllocator<B>,
         buffer: &mut SmartBuffer<B>,
+        fid: QueueFamilyId,
         access: BufferAccess,
         offset: u64,
         data: &[u8],
     ) -> Result<Option<SmartBuffer<B>>, Error> {
         if data.len() <= self.staging_threshold {
-            let cbuf = self.get_command_buffer(device);
+            let cbuf = self.get_command_buffer(device, fid);
             cbuf.update_buffer(buffer.borrow_mut(), offset, data);
 
             cbuf.pipeline_barrier(
@@ -247,7 +280,7 @@ where
                     data,
                 );
             }
-            let cbuf = self.get_command_buffer(device);
+            let cbuf = self.get_command_buffer(device, fid);
             cbuf.copy_buffer(
                 staging.borrow(),
                 (&*buffer).borrow(),

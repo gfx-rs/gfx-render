@@ -4,7 +4,7 @@ use failure::Error;
 
 use hal::Instance;
 use hal::adapter::PhysicalDevice;
-use hal::queue::{General, QueueFamily, QueueType};
+use hal::queue::QueueFamily;
 
 use mem::SmartAllocator;
 use backend::BackendEx;
@@ -19,35 +19,30 @@ const STAGING_TRESHOLD: usize = 32 * 1024; // 32kb
 ///
 /// Add config.
 ///
-pub fn init<B, R>() -> Result<(Factory<B>, Renderer<B, R>), Error>
+pub fn init<B, R, F>(queues: F) -> Result<(Factory<B>, Renderer<B, R>), Error>
 where
     B: BackendEx,
     R: Send + Sync + 'static,
+    F: FnOnce(&[B::QueueFamily]) -> Vec<(&B::QueueFamily, usize)>
 {
-    use failure::err_msg;
-
     let instance = B::init();
-    let mut adapter = instance.enumerate_adapters().remove(0);
+    let adapter = instance.enumerate_adapters().remove(0);
     trace!("Adapter {:#?}", adapter.info);
 
     trace!("Device features: {:#?}", adapter.physical_device.features());
     trace!("Device limits: {:#?}", adapter.physical_device.limits());
 
-    let (device, queue_group) = {
+    let (device, queue_groups) = {
         trace!("Queue families: {:#?}", adapter.queue_families);
-        let qf = adapter
-            .queue_families
-            .drain(..)
-            .filter(|family| family.queue_type() == QueueType::General)
-            .next()
-            .ok_or(err_msg("Can't find General queue family"))?;
+
+        let queues = queues(&adapter.queue_families).into_iter().map(|(qf, count)| (qf, vec![1.0; count])).collect::<Vec<_>>();
+        let queues = queues.iter().map(|&(qf, ref priorities)| (qf, priorities.as_slice())).collect::<Vec<_>>();
+
         let mut gpu = adapter
             .physical_device
-            .open(&[(&qf, &[1.0])])?;
-        let queue_group = gpu.queues
-            .take::<General>(qf.id())
-            .expect("This group was requested");
-        (gpu.device, queue_group)
+            .open(&queues)?;
+        let queue_groups = queues.iter().map(|&(qf, _)| (qf.id(), gpu.queues.take_raw(qf.id()).unwrap())).collect();
+        (gpu.device, queue_groups)
     };
     trace!("Logical device created");
 
@@ -62,13 +57,12 @@ where
 
     let factory = Factory::new(
         instance,
-        adapter.physical_device,
+        adapter,
         device,
         allocator,
         STAGING_TRESHOLD,
-        queue_group.family(),
     );
-    let renderer = Renderer::<B, R>::new(queue_group);
+    let renderer = Renderer::<B, R>::new(queue_groups);
 
     Ok((factory, renderer))
 }
