@@ -1,13 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 
-use failure::{Error, Fail, ResultExt};
+use failure::Error;
 
 use hal::{Backend, Device as HalDevice};
 use hal::device::WaitFor;
 use hal::queue::{QueueFamilyId, RawCommandQueue, RawSubmission};
 use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig, Extent2D, Surface};
-use winit::Window;
 
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
@@ -38,7 +37,6 @@ pub struct Renderer<B: Backend, R> {
     targets: HashMap<TargetId, Target<B, R>>,
     resources: Resources<B>,
     counter: u64,
-    retire_renders: Vec<(u64, R)>,
 }
 
 impl<B, R> Renderer<B, R>
@@ -96,8 +94,6 @@ where
         E: Into<Error>,
         R: Render<B, T>,
     {
-        use std::mem::replace;
-
         let ref mut target = *self.targets
             .get_mut(&id)
             .ok_or(format_err!("No target with id {:#?}", id))?;
@@ -115,7 +111,6 @@ where
 
         Renderer {
             autorelease: AutoreleasePool::new(),
-            
             targets: HashMap::new(),
             counter: 0,
             resources: Resources {
@@ -123,7 +118,6 @@ where
                 fences: Vec::new(),
                 semaphores: Vec::new(),
             },
-            retire_renders: Vec::new(),
         }
     }
 
@@ -340,28 +334,6 @@ where
             if frame.as_ref().map_or(false, |j| j.id() == f.id()) {
                 break;
             }
-        }
-    }
-
-    fn check<W>(&mut self, mut checking: W) -> bool
-    where
-        W: FnMut(Payload<B>) -> bool,
-    {
-        while let Some((f, i)) = self.queue.pop_front() {
-            if !checking(self.jobs[f.id()].payload.take().unwrap()) {
-                self.queue.push_front((f, i))
-            }
-        }
-        assert!(self.jobs.iter().all(|job| job.payload.is_none()));
-        true
-    }
-
-    fn clean<F>(&mut self, mut cleaning: F)
-    where
-        F: FnMut(Payload<B>),
-    {
-        for payload in self.jobs.drain(..).filter_map(|job| job.payload) {
-            cleaning(payload);
         }
     }
 }
