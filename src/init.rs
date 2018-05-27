@@ -57,12 +57,13 @@ where
 
     let factory = Factory::new(
         instance,
-        adapter,
+        adapter.info,
+        adapter.physical_device,
         device,
         allocator,
         STAGING_TRESHOLD,
     );
-    let renderer = Renderer::<B, R>::new(queue_groups);
+    let renderer = Renderer::<B, R>::new(queue_groups, adapter.queue_families);
 
     Ok((factory, renderer))
 }

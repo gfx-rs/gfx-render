@@ -8,19 +8,20 @@ use hal::device::WaitFor;
 use hal::queue::{QueueFamilyId, RawCommandQueue, RawSubmission};
 use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig, Extent2D, Surface};
 
+use winit::Window;
+
+use backend::BackendEx;
+
 #[cfg(feature = "gfx-backend-metal")]
 use metal;
 
 use factory::Factory;
 
 pub trait Render<B: Backend, T> {
-    fn render(
+    fn run(
         &mut self,
-        frame: Frame,
-        acquire: &B::Semaphore,
-        swapchain: &mut B::Swapchain,
         fences: &mut Vec<B::Fence>,
-        families: &mut HashMap<QueueFamilyId, Vec<B::CommandQueue>>,
+        queues: &mut HashMap<QueueFamilyId, Vec<B::CommandQueue>>,
         factory: &mut Factory<B>,
         data: &mut T,
     ) -> usize;
@@ -33,15 +34,14 @@ pub struct TargetId(u64);
 
 pub struct Renderer<B: Backend, R> {
     autorelease: AutoreleasePool<B>,
-    
     targets: HashMap<TargetId, Target<B, R>>,
-    resources: Resources<B>,
+    families: Families<B>,
     counter: u64,
 }
 
 impl<B, R> Renderer<B, R>
 where
-    B: Backend,
+    B: BackendEx,
 {
     /// Dispose of the renderer.
     pub fn dispose<T>(mut self, factory: &mut Factory<B>, data: &mut T)
@@ -49,29 +49,27 @@ where
         R: Render<B, T>,
     {
         for (_, target) in self.targets {
-            target.dispose(factory, &mut self.resources, data);
+            target.dispose(factory, data);
         }
-        self.resources.dispose(factory);
+        self.families.dispose(factory);
     }
 
-    /// Creates new render
+    /// Creates new render target
     pub fn add_target(
         &mut self,
-        mut surface: B::Surface,
-        config: SwapchainConfig,
+        window: &Window,
         factory: &mut Factory<B>,
     ) -> TargetId {
         self.counter += 1;
         let id = TargetId(self.counter);
         debug_assert!(self.targets.get(&id).is_none());
 
-        let (swapchain, backbuffer) = factory.create_swapchain(&mut surface, config);
+        let surface = factory.create_surface(window);
+
         let target = Target {
-            surface: surface,
-            swapchain,
-            backbuffer: Some(backbuffer),
+            surface,
             render: None,
-            jobs: Jobs::new(),
+            fences: Vec::new(),
         };
         self.targets.insert(id, target);
         id
@@ -83,14 +81,14 @@ where
         R: Render<B, T>,
     {
         if let Some(target) = self.targets.remove(&id) {
-            target.dispose(factory, &mut self.resources, data);
+            target.dispose(factory, data);
         }
     }
 
     /// Add graph to the render
     pub fn set_render<F, E, T>(&mut self, id: TargetId, factory: &mut Factory<B>, data: &mut T, render: F) -> Result<(), Error>
     where
-        F: FnOnce(Backbuffer<B>, Extent2D, &mut Factory<B>, &mut T) -> Result<R, E>,
+        F: FnOnce(&mut B::Surface, &[B::QueueFamily], &mut Factory<B>, &mut T) -> Result<R, E>,
         E: Into<Error>,
         R: Render<B, T>,
     {
@@ -98,11 +96,16 @@ where
             .get_mut(&id)
             .ok_or(format_err!("No target with id {:#?}", id))?;
 
-        target.set_render(id, factory, &mut self.resources, data, render)
+        target.wait(factory);
+        target.render.take().map(|render| render.dispose(factory, data));
+        target.render = Some(render(&mut target.surface, &self.families.families, factory, data).map_err(|err| err.into().context("Failed to build render"))?);
+
+
+        Ok(())
     }
 
     /// Create new render system providing it with general queue group and surfaces to draw onto
-    pub fn new(families: HashMap<QueueFamilyId, Vec<B::CommandQueue>>) -> Self
+    pub fn new(queues: HashMap<QueueFamilyId, Vec<B::CommandQueue>>, families: Vec<B::QueueFamily>,) -> Self
     where
         R: Send + Sync,
     {
@@ -113,10 +116,9 @@ where
             autorelease: AutoreleasePool::new(),
             targets: HashMap::new(),
             counter: 0,
-            resources: Resources {
+            families: Families {
+                queues,
                 families,
-                fences: Vec::new(),
-                semaphores: Vec::new(),
             },
         }
     }
@@ -130,19 +132,12 @@ where
 
         // Run targets
         for target in self.targets.values_mut() {
-            target.run(factory, &mut self.resources, data);
+            target.run(&mut self.families, factory, data);
         }
 
-        // walk over job_queue and find earliest
-        if let Some(earliest) = self.targets
-            .values()
-            .filter_map(|target| target.jobs.earliest())
-            .min() {
-
-            unsafe {
-                // cleanup after finished jobs.
-                factory.advance(earliest);
-            }
+        unsafe {
+            // cleanup after finished jobs.
+            factory.advance();
         }
 
         self.autorelease.reset();
@@ -152,9 +147,9 @@ where
     where
         B: Backend,
     {
-        let ref mut families = self.resources.families;
+        let ref mut queues = self.families.queues;
         for (cbuf, fid) in factory.uploads() {
-            let family = families.get_mut(&fid).unwrap();
+            let family = queues.get_mut(&fid).unwrap();
 
             unsafe {
                 family[0].submit_raw(
@@ -172,198 +167,55 @@ where
 
 struct Target<B: Backend, R> {
     surface: B::Surface,
-    swapchain: B::Swapchain,
-    backbuffer: Option<Backbuffer<B>>,
     render: Option<R>,
-    jobs: Jobs<B>,
+    fences: Vec<B::Fence>,
 }
 
 impl<B, R> Target<B, R>
 where
     B: Backend,
 {
-    fn set_render<F, E, T>(&mut self, id: TargetId, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T, render: F) -> Result<(), Error>
-    where
-        F: FnOnce(Backbuffer<B>, Extent2D, &mut Factory<B>, &mut T) -> Result<R, E>,
-        E: Into<Error>,
-        R: Render<B, T>,
-    {
-        self.shutdown(factory, resources, data);
-        let backbuffer = self.backbuffer.take().unwrap();
-        let extent = self.surface.kind().extent().into();
-        let render = render(backbuffer, extent, factory, data)
-            .map_err(|err| err.into().context(format!("Failed to build `Render` for target: {:?}", id)))?;
-        self.render = Some(render);
-        Ok(())
-    }
-
-    fn shutdown<T>(&mut self, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T)
-    where
-        R: Render<B, T>,
-    {
-        // Wait for jobs to finish.
-        self.jobs.wait(None, |payload| {
-            if !factory.wait_for_fences(&payload.fences, WaitFor::All, !0) {
-                panic!("Device lost or something");
-            }
-            factory.reset_fences(&payload.fences);
-            resources.fences.extend(payload.fences);
-            resources.semaphores.push(payload.acquire);
-        });
-
-        if let Some(backbuffer) = self.render.take().map(|render| render.dispose(factory, data)) {
-            debug_assert!(self.backbuffer.is_none());
-            self.backbuffer = Some(backbuffer);
-        } else {
-            debug_assert!(self.backbuffer.is_some());
+    fn wait(&mut self, factory: &mut Factory<B>) {
+        if !factory.wait_for_fences(&self.fences, WaitFor::All, !0) {
+            panic!("Device lost or something");
         }
     }
 
-    fn run<T>(&mut self, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T)
+    fn run<T>(&mut self, families: &mut Families<B>, factory: &mut Factory<B>, data: &mut T)
     where
         R: Render<B, T>,
     {
-        let render = if let Some(ref mut render) = self.render {
-            render
-        } else {
-            return
+        self.wait(factory);
+        if let Some(ref mut render) = self.render {
+            render.run(
+                &mut self.fences,
+                &mut families.queues,
+                factory,
+                data,
+            );
         };
-
-        // Get fresh semaphore.
-        let acquire = resources
-            .semaphores
-            .pop()
-            .unwrap_or_else(|| factory.create_semaphore());
-
-        // Start frame acquisition.
-        let frame = self.swapchain.acquire_frame(FrameSync::Semaphore(&acquire));
-        let index = factory.current();
-
-        // Clean fences
-        let mut fences = Vec::new();
-
-        // Wait for earlier jobs until one associated with next frame.
-        self.jobs.wait(Some(frame.clone()), |payload| {
-            // Wait for job to finish.
-            if !factory.wait_for_fences(&payload.fences, WaitFor::All, !0) {
-                panic!("Device lost or something");
-            }
-
-            // Reclaim fences and acquisition semaphore
-            fences.extend(payload.fences);
-            resources.semaphores.push(payload.acquire);
-        });
-
-        // Enqueue frame.
-        let job = self.jobs.push(frame.clone(), index);
-
-        // Record and submit commands to draw frame.
-        let fences_used = render.render(
-            frame.clone(),
-            &acquire,
-            &mut self.swapchain,
-            &mut fences,
-            &mut resources.families,
-            factory,
-            data,
-        );
-
-        if fences_used < fences.len() {
-            factory.reset_fences(&fences[fences_used..]);
-            for fence in fences.drain(fences_used ..) {
-                factory.destroy_fence(fence);
-            }
-        }
-
-        // Save job resources.
-        job.payload = Some(Payload {
-            fences,
-            acquire,
-        });
     }
 
-    fn dispose<T>(mut self, factory: &mut Factory<B>, resources: &mut Resources<B>, data: &mut T) -> Backbuffer<B>
+    fn dispose<T>(mut self, factory: &mut Factory<B>, data: &mut T)
     where
         R: Render<B, T>,
     {
-        self.shutdown(factory, resources, data);
-        self.backbuffer.take().unwrap()
+        self.wait(factory);
+        unimplemented!()
     }
 }
 
-struct Jobs<B: Backend> {
-    queue: VecDeque<(Frame, u64)>,
-    jobs: Vec<Job<B>>,
+struct Families<B: Backend> {
+    queues: HashMap<QueueFamilyId, Vec<B::CommandQueue>>,
+    families: Vec<B::QueueFamily>,
 }
 
-impl<B> Jobs<B>
-where
-    B: Backend,
-{
-    fn new() -> Self {
-        Jobs {
-            queue: VecDeque::new(),
-            jobs: Vec::new(),
-        }
-    }
-
-    fn earliest(&self) -> Option<u64> {
-        self.queue.front().map(|&(_, index)| index)
-    }
-
-    fn push(
-        &mut self,
-        frame: Frame,
-        index: u64,
-    ) -> &mut Job<B> {
-        while frame.id() >= self.jobs.len() {
-            self.jobs.push(Job {
-                payload: None,
-            });
-        }
-        self.queue.push_back((frame.clone(), index));
-        &mut self.jobs[frame.id()]
-    }
-
-    fn wait<W>(&mut self, frame: Option<Frame>, mut waiting: W)
-    where
-        W: FnMut(Payload<B>),
-    {
-        while let Some((f, _)) = self.queue.pop_front() {
-            waiting(self.jobs[f.id()].payload.take().unwrap());
-            if frame.as_ref().map_or(false, |j| j.id() == f.id()) {
-                break;
-            }
-        }
-    }
-}
-
-struct Job<B: Backend> {
-    payload: Option<Payload<B>>,
-}
-
-struct Payload<B: Backend> {
-    acquire: B::Semaphore,
-    fences: Vec<B::Fence>,
-}
-
-struct Resources<B: Backend> {
-    families: HashMap<QueueFamilyId, Vec<B::CommandQueue>>,
-    fences: Vec<B::Fence>,
-    semaphores: Vec<B::Semaphore>,
-}
-
-impl<B> Resources<B>
+impl<B> Families<B>
 where
     B: Backend,
 {
     fn dispose(self, factory: &mut Factory<B>) {
-        for semaphore in self.semaphores {
-            factory.destroy_semaphore(semaphore);
-        }
-        for fence in self.fences {
-            factory.destroy_fence(fence);
-        }
+        unimplemented!()
     }
 }
 

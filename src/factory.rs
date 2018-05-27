@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use failure::{Error, ResultExt};
 
-use hal::{MemoryTypeId, Adapter, Backend, Device, Surface, Limits, Features, PhysicalDevice};
+use hal::{MemoryTypeId, AdapterInfo, Backend, Device, Surface, Limits, Features, PhysicalDevice};
 use hal::device::{BindError, ShaderError, FramebufferError, OutOfMemory, WaitFor};
 use hal::error::HostExecutionError;
 use hal::buffer;
@@ -120,7 +120,8 @@ pub struct Factory<B: Backend<Device = D>, D: Device<B> = <B as Backend>::Device
     buffers: Terminal<RelevantBuffer<B>>,
     images: Terminal<RelevantImage<B>>,
     instance: Box<Any + Send + Sync>,
-    adapter: Adapter<B>,
+    physical_device: B::PhysicalDevice,
+    info: AdapterInfo,
 }
 
 impl<B, D> Drop for Factory<B, D>
@@ -131,15 +132,14 @@ where
     fn drop(&mut self) {
         use std::ptr::read;
 
-        let end_of_times = u64::max_value() - 1;
-        self.current = end_of_times;
+        self.current = u64::max_value() - 1;
         debug!("Dispose of `Factory`");
         unsafe {
             debug!("Dispose of uploader.");
             read(&mut *self.upload).dispose(&self.device);
 
             debug!("Advance to the end of times");
-            self.advance(end_of_times);
+            self.advance();
 
             debug!("Dispose of allocator.");
             read(&mut *self.allocator).dispose(&self.device).expect("Allocator must be cleared");
@@ -321,7 +321,7 @@ where
     /// # Parameters
     ///
     /// `window`    - window handler which will be represented by new surface.
-    pub fn create_surface(&mut self, window: &Window) -> B::Surface
+    pub(crate) fn create_surface(&mut self, window: &Window) -> B::Surface
     where
         B: BackendEx,
     {
@@ -343,31 +343,7 @@ where
         &self,
         surface: &B::Surface,
     ) -> (SurfaceCapabilities, Option<Vec<Format>>) {
-        surface.capabilities_and_formats(&self.adapter.physical_device)
-    }
-
-    /// Construct `Factory` from parts.
-    pub fn new(
-        instance: B::Instance,
-        adapter: Adapter<B>,
-        device: B::Device,
-        allocator: SmartAllocator<B>,
-        staging_threshold: usize,
-    ) -> Self
-    where
-        B: BackendEx,
-    {
-        Factory {
-            instance: Box::new(instance),
-            adapter: adapter,
-            device: device.into(),
-            allocator: ManuallyDrop::new(allocator),
-            reclamation: ReclamationQueue::new(),
-            current: 0,
-            upload: ManuallyDrop::new(Upload::new(staging_threshold)),
-            buffers: Terminal::new(),
-            images: Terminal::new(),
-        }
+        surface.capabilities_and_formats(&self.physical_device)
     }
 
     /// Borrow both `Device` and `SmartAllocator` from the `Factory`.
@@ -377,17 +353,38 @@ where
 
     /// Get features supported by hardware.
     pub fn features(&self) -> Features {
-        self.adapter.physical_device.features()
+        self.physical_device.features()
     }
 
     /// Get hardware specific limits.
     pub fn limits(&self) -> Limits {
-        self.adapter.physical_device.limits()
+        self.physical_device.limits()
     }
 
-    /// Get command queue families.
-    pub fn families(&self) -> &[B::QueueFamily] {
-        &self.adapter.queue_families
+    /// Construct `Factory` from parts.
+    pub(crate) fn new(
+        instance: B::Instance,
+        info: AdapterInfo,
+        physical_device: B::PhysicalDevice,
+        device: B::Device,
+        allocator: SmartAllocator<B>,
+        staging_threshold: usize,
+    ) -> Self
+    where
+        B: BackendEx,
+    {
+        Factory {
+            instance: Box::new(instance),
+            device: device.into(),
+            allocator: ManuallyDrop::new(allocator),
+            reclamation: ReclamationQueue::new(),
+            current: 0,
+            upload: ManuallyDrop::new(Upload::new(staging_threshold)),
+            buffers: Terminal::new(),
+            images: Terminal::new(),
+            physical_device,
+            info,
+        }
     }
 
     /// Fetch command buffer with uploads recorded.
@@ -395,15 +392,8 @@ where
         self.upload.uploads(self.current)
     }
 
-    /// `RenderSystem` call this to know with which frame index recorded commands are associated.
-    pub(crate) fn current(&mut self) -> u64 {
-        self.current
-    }
-
-    /// `RenderSystem` call this with least frame index with which ongoing job is associated.
-    /// Hence all resources released before this index can be destroyed.
-    pub(crate) unsafe fn advance(&mut self, ongoing: u64) {
-        debug_assert!(ongoing <= self.current);
+    /// Render system call this after waiting for last jobs.
+    pub(crate) unsafe fn advance(&mut self) {
         for buffer in self.buffers.drain() {
             self.reclamation.push(self.current, AnyItem::Buffer(buffer));
         }
@@ -412,10 +402,10 @@ where
         }
         let ref device = self.device;
         let ref mut allocator = self.allocator;
-        self.reclamation.clear(ongoing, |item| {
+        self.reclamation.clear(self.current, |item| {
             item.destroy(device, allocator);
         });
-        self.upload.clear(ongoing);
+        self.upload.clear(self.current);
         self.current += 1;
     }
 }
