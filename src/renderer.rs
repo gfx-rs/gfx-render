@@ -123,11 +123,13 @@ where
         }
     }
 
+    #[inline]
     pub fn run<T>(&mut self, factory: &mut Factory<B>, data: &mut T)
     where
         B: Backend,
         R: Render<B, T>,
     {
+        profile!("Renderer::run");
         self.poll_uploads(factory);
 
         // Run targets
@@ -143,12 +145,17 @@ where
         self.autorelease.reset();
     }
 
+    #[inline]
     fn poll_uploads(&mut self, factory: &mut Factory<B>)
     where
         B: Backend,
     {
+        profile!("Renderer::poll_uploads");
+
         let ref mut queues = self.families.queues;
         for (cbuf, fid) in factory.uploads() {
+            profile!("command buffer");
+
             let family = queues.get_mut(&fid).unwrap();
 
             unsafe {
@@ -175,17 +182,22 @@ impl<B, R> Target<B, R>
 where
     B: Backend,
 {
+    #[inline]
     fn wait(&mut self, factory: &mut Factory<B>) {
+        profile!("Target::wait");
         if !factory.wait_for_fences(&self.fences, WaitFor::All, !0) {
             panic!("Device lost or something");
         }
     }
 
+    #[inline]
     fn run<T>(&mut self, families: &mut Families<B>, factory: &mut Factory<B>, data: &mut T)
     where
         R: Render<B, T>,
     {
+        profile!("Target::run");
         self.wait(factory);
+
         if let Some(ref mut render) = self.render {
             render.run(
                 &mut self.fences,
@@ -244,9 +256,11 @@ impl<B: 'static> AutoreleasePool<B> {
 
     #[inline(always)]
     fn reset(&mut self) {
+        profile!("Autorelease");
         use std::any::TypeId;
         if TypeId::of::<B>() == TypeId::of::<metal::Backend>() {
             unsafe {
+                profile!("Autorelease::reset");
                 self.autorelease.as_mut().unwrap().reset();
             }
         }

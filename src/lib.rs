@@ -8,6 +8,21 @@ extern crate gfx_memory as mem;
 extern crate log;
 extern crate winit;
 
+#[cfg(feature = "profile")]
+extern crate flame;
+
+#[cfg(feature = "profile")]
+macro_rules! profile {
+    ($name:tt) => {
+        let guard = ::flame::start_guard(concat!("'", $name, "' at : ", line!()));
+    }
+}
+
+#[cfg(not(feature = "profile"))]
+macro_rules! profile {
+    ($name:tt) => {}
+}
+
 #[cfg(feature = "gfx-backend-vulkan")]
 pub extern crate gfx_backend_vulkan as vulkan;
 

@@ -6,6 +6,9 @@ license = "MIT/Apache-2.0"
 repository = "https://github.com/gfx-rs/gfx-render.git"
 documentation = "https://docs.rs/crate/gfx-render/0.1.0/gfx-render"
 
+[features]
+profile = ["flame"]
+
 [dependencies]
 crossbeam-channel = "0.1"
 failure = "0.1"
@@ -13,6 +16,7 @@ gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "d8e5d0cc3", features =
 gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "37ef713" }
 log = "0.4"
 winit = "0.13"
+flame = { version = "0.2", optional = true }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "d8e5d0cc3" }
