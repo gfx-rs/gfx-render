@@ -22,7 +22,7 @@ use hal::error::HostExecutionError;
 use hal::buffer;
 use hal::format::{Format, Swizzle};
 use hal::image::{self, Extent, Kind, Layout, Level, Offset, StorageFlags,
-                 SubresourceLayers, SubresourceRange, Tiling, ViewKind, SamplerInfo};
+                 SubresourceLayers, Subresource, SubresourceRange, SubresourceFootprint, Tiling, ViewKind, SamplerInfo};
 use hal::mapping::{self, Reader, Writer};
 use hal::memory::{Properties, Requirements};
 use hal::pass::{Attachment, SubpassDesc, SubpassDependency};
@@ -921,6 +921,13 @@ where
         I::Item: Borrow<B::Fence>,
     {
         self.device.wait_for_fences(fences, wait, timeout_ms)
+    }
+
+    #[inline]
+    fn get_image_subresource_footprint(
+        &self, image: &B::Image, subresource: Subresource
+    ) -> SubresourceFootprint {
+        self.device.get_image_subresource_footprint(image, subresource)
     }
 }
 
