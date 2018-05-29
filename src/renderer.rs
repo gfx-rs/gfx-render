@@ -185,7 +185,7 @@ where
     #[inline]
     fn wait(&mut self, factory: &mut Factory<B>) {
         profile!("Target::wait");
-        if !factory.wait_for_fences(&self.fences, WaitFor::All, !0) {
+        if !self.fences.is_empty() && !factory.wait_for_fences(&self.fences, WaitFor::All, !0) {
             panic!("Device lost or something");
         }
     }
