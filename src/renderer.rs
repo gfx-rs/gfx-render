@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use failure::Error;
@@ -6,7 +6,7 @@ use failure::Error;
 use hal::{Backend, Device as HalDevice};
 use hal::device::WaitFor;
 use hal::queue::{QueueFamilyId, RawCommandQueue, RawSubmission};
-use hal::window::{Backbuffer, Frame, FrameSync, Swapchain, SwapchainConfig, Extent2D, Surface};
+use hal::window::{Backbuffer};
 
 use winit::Window;
 

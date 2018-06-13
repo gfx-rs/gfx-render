@@ -31,7 +31,7 @@ use hal::pso::{self, DescriptorRangeDesc, ShaderStageFlags, DescriptorSetLayoutB
 use hal::range::RangeArg;
 use hal::queue::{QueueGroup, QueueFamilyId};
 use hal::query::QueryType;
-use hal::window::{Backbuffer, SwapchainConfig, SurfaceCapabilities};
+use hal::window::{Backbuffer, SwapchainConfig, SurfaceCapabilities, Extent2D};
 
 use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type, MemoryAllocator};
 
@@ -679,15 +679,18 @@ where
     }
 
     #[inline]
-    fn create_descriptor_set_layout<I>(
+    fn create_descriptor_set_layout<I, J>(
         &self, 
-        bindings: I
+        bindings: I,
+        immutable_samplers: J,
     ) -> B::DescriptorSetLayout
     where
         I: IntoIterator,
         I::Item: Borrow<DescriptorSetLayoutBinding>,
+        J: IntoIterator,
+        J::Item: Borrow<B::Sampler>,
     {
-        self.device.create_descriptor_set_layout(bindings)
+        self.device.create_descriptor_set_layout(bindings, immutable_samplers)
     }
 
     #[inline]
@@ -790,9 +793,11 @@ where
     fn create_swapchain(
         &self, 
         surface: &mut B::Surface, 
-        config: SwapchainConfig
+        config: SwapchainConfig,
+        old_swapchain: Option<B::Swapchain>,
+        extent: &Extent2D
     ) -> (B::Swapchain, Backbuffer<B>) {
-        self.device.create_swapchain(surface, config)
+        self.device.create_swapchain(surface, config, old_swapchain, extent)
     }
 
     #[inline]
