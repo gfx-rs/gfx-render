@@ -12,17 +12,17 @@ profile = ["flame"]
 [dependencies]
 crossbeam-channel = "0.1"
 failure = "0.1"
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "63826ab79", features = ["serde"] }
-gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "38e313a" }
+gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b", features = ["serde"] }
+gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "4f6e410" }
 log = "0.4"
 winit = "0.13"
 flame = { version = "0.2", optional = true }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "63826ab79" }
+gfx-backend-vulkan = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "63826ab79" }
+gfx-backend-metal = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b" }
 
 [target.'cfg(windows)'.dependencies]
-gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "63826ab79" }
+gfx-backend-dx12 = { version = "0.1", optional = true, git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b" }

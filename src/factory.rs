@@ -31,7 +31,7 @@ use hal::pso::{self, DescriptorRangeDesc, ShaderStageFlags, DescriptorSetLayoutB
 use hal::range::RangeArg;
 use hal::queue::{QueueGroup, QueueFamilyId};
 use hal::query::QueryType;
-use hal::window::{Backbuffer, SwapchainConfig, SurfaceCapabilities, Extent2D};
+use hal::window::{Backbuffer, SwapchainConfig, SurfaceCapabilities, Extent2D, PresentMode};
 
 use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type, MemoryAllocator};
 
@@ -339,11 +339,11 @@ where
     ///
     /// `surface`   - surface object which capabilities and supported formats are retrieved.
     ///
-    pub fn capabilities_and_formats(
+    pub fn compatibility(
         &self,
         surface: &B::Surface,
-    ) -> (SurfaceCapabilities, Option<Vec<Format>>) {
-        surface.capabilities_and_formats(&self.physical_device)
+    ) -> (SurfaceCapabilities, Option<Vec<Format>>, Vec<PresentMode>) {
+        surface.compatibility(&self.physical_device)
     }
 
     /// Borrow both `Device` and `SmartAllocator` from the `Factory`.
@@ -591,7 +591,7 @@ where
         buf: &B::Buffer, 
         fmt: Option<Format>, 
         range: R
-    ) -> Result<B::BufferView, buffer::ViewError> {
+    ) -> Result<B::BufferView, buffer::ViewCreationError> {
         self.device.create_buffer_view(buf, fmt, range)
     }
 

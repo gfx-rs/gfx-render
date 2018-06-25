@@ -44,7 +44,7 @@ where
     B: BackendEx,
 {
     /// Dispose of the renderer.
-    pub fn dispose<T>(mut self, factory: &mut Factory<B>, data: &mut T)
+    pub fn dispose<T>(self, factory: &mut Factory<B>, data: &mut T)
     where
         R: Render<B, T>,
     {
@@ -208,7 +208,7 @@ where
         };
     }
 
-    fn dispose<T>(mut self, factory: &mut Factory<B>, data: &mut T)
+    fn dispose<T>(mut self, factory: &mut Factory<B>, _data: &mut T)
     where
         R: Render<B, T>,
     {
@@ -226,7 +226,7 @@ impl<B> Families<B>
 where
     B: Backend,
 {
-    fn dispose(self, factory: &mut Factory<B>) {
+    fn dispose(self, _factory: &mut Factory<B>) {
         unimplemented!()
     }
 }
