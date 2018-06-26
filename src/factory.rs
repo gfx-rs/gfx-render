@@ -7,93 +7,120 @@
 //! All this packet into sendable and shareable `Factory` type.
 //!
 
-
 use std::any::Any;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::Range;
 
-use failure::{Error, ResultExt};
+use hal::{
+    buffer, device::{BindError, FramebufferError, OutOfMemory, ShaderError, WaitFor},
+    error::HostExecutionError, format::{Format, Swizzle}, image, mapping::{self, Reader, Writer},
+    memory::{Properties, Requirements}, pass::{Attachment, SubpassDependency, SubpassDesc},
+    pool::{CommandPool, CommandPoolCreateFlags}, pso, query::QueryType,
+    queue::{QueueFamilyId, QueueGroup}, range::RangeArg, window, AdapterInfo, Backend, Device,
+    Features, Limits, MemoryTypeId, PhysicalDevice, Surface,
+};
 
-use hal::{MemoryTypeId, AdapterInfo, Backend, Device, Surface, Limits, Features, PhysicalDevice};
-use hal::device::{BindError, ShaderError, FramebufferError, OutOfMemory, WaitFor};
-use hal::error::HostExecutionError;
-use hal::buffer;
-use hal::format::{Format, Swizzle};
-use hal::image::{self, Extent, Kind, Layout, Level, Offset, StorageFlags,
-                 SubresourceLayers, Subresource, SubresourceRange, SubresourceFootprint, Tiling, ViewKind, SamplerInfo};
-use hal::mapping::{self, Reader, Writer};
-use hal::memory::{Properties, Requirements};
-use hal::pass::{Attachment, SubpassDesc, SubpassDependency};
-use hal::pool::{CommandPool, CommandPoolCreateFlags};
-use hal::pso::{self, DescriptorRangeDesc, ShaderStageFlags, DescriptorSetLayoutBinding, DescriptorSetWrite, Descriptor, DescriptorSetCopy, GraphicsPipelineDesc, ComputePipelineDesc};
-use hal::range::RangeArg;
-use hal::queue::{QueueGroup, QueueFamilyId};
-use hal::query::QueryType;
-use hal::window::{Backbuffer, SwapchainConfig, SurfaceCapabilities, Extent2D, PresentMode};
-
-use mem::{Block, Factory as FactoryTrait, SmartAllocator, SmartBlock, Type, MemoryAllocator};
+use mem::{Block, MemoryAllocator, MemoryError, SmartAllocator, SmartBlock, Type};
 
 use winit::Window;
 
 use backend::BackendEx;
 use escape::{Escape, Terminal};
 use reclamation::ReclamationQueue;
-use upload::Upload;
+use upload::{self, Upload};
 
-pub use mem::Item as RelevantItem;
+/// Item that must be destructed manually
+#[derive(Debug)]
+pub struct RelevantItem<T, B> {
+    raw: T,
+    block: B,
+}
+
+impl<T, B> Borrow<T> for RelevantItem<T, B> {
+    fn borrow(&self) -> &T {
+        &self.raw
+    }
+}
+
+impl<T, B> BorrowMut<T> for RelevantItem<T, B> {
+    fn borrow_mut(&mut self) -> &mut T {
+        &mut self.raw
+    }
+}
+
+impl<T, B> Block for RelevantItem<T, B>
+where
+    T: Debug + Send + Sync,
+    B: Block,
+{
+    type Memory = B::Memory;
+    fn memory(&self) -> &Self::Memory {
+        self.block.memory()
+    }
+    fn range(&self) -> Range<u64> {
+        self.block.range()
+    }
+}
+
+/// Buffer that must be destructed manually
+pub type RelevantBuffer<B> =
+    RelevantItem<<B as Backend>::Buffer, SmartBlock<<B as Backend>::Memory>>;
+
+/// Image that must be destructed manually
+pub type RelevantImage<B> = RelevantItem<<B as Backend>::Image, SmartBlock<<B as Backend>::Memory>>;
 
 /// Wrapper around raw gpu resource like `B::Buffer` or `B::Image`
 /// It will send raw resource back to the `Factory` if dropped.
 /// Destroying it manually with `Factory::destroy_*` is better performance-wise.
 #[derive(Debug)]
-pub struct Item<I, B> {
-    inner: Escape<RelevantItem<I, B>>,
+pub struct Item<T, B> {
+    inner: Escape<RelevantItem<T, B>>,
 }
 
-impl<I, B> Item<I, B> {
+impl<T, B> Item<T, B> {
     /// Get raw gpu resource.
-    pub fn raw(&self) -> &I {
-        self.inner.raw()
+    pub fn raw(&self) -> &T {
+        &self.inner.raw
     }
 
     /// Get memory block to which resource is bound.
     pub fn block(&self) -> &B {
-        self.inner.block()
+        &self.inner.block
     }
 
     /// Unwrap from inner `Escape` wrapper.
     /// Returned item must be disposed manually.
     /// It may panic or behave unpredictably when dropped.
-    pub fn into_inner(self) -> RelevantItem<I, B> {
+    pub fn into_inner(self) -> RelevantItem<T, B> {
         Escape::into_inner(self.inner)
     }
 }
 
-impl<I, B> Borrow<I> for Item<I, B> {
-    fn borrow(&self) -> &I {
-        (&*self.inner).borrow()
+impl<T, B> Borrow<T> for Item<T, B> {
+    fn borrow(&self) -> &T {
+        &self.inner.raw
     }
 }
 
-impl<I, B> BorrowMut<I> for Item<I, B> {
-    fn borrow_mut(&mut self) -> &mut I {
-        (&mut *self.inner).borrow_mut()
+impl<T, B> BorrowMut<T> for Item<T, B> {
+    fn borrow_mut(&mut self) -> &mut T {
+        &mut self.inner.raw
     }
 }
 
-impl<I, B> Block for Item<I, B>
+impl<T, B> Block for Item<T, B>
 where
-    I: Debug + Send + Sync,
+    T: Debug + Send + Sync,
     B: Block,
 {
     type Memory = B::Memory;
     fn memory(&self) -> &Self::Memory {
-        self.inner.memory()
+        self.inner.block.memory()
     }
     fn range(&self) -> Range<u64> {
-        self.inner.range()
+        self.inner.block.range()
     }
 }
 
@@ -103,6 +130,88 @@ pub type Buffer<B> = Item<<B as Backend>::Buffer, SmartBlock<<B as Backend>::Mem
 /// Image type `Factory` creates
 pub type Image<B> = Item<<B as Backend>::Image, SmartBlock<<B as Backend>::Memory>>;
 
+/// Errors this factory can produce.
+#[derive(Clone, Debug, Fail)]
+pub enum FactoryError {
+    /// Buffer creation error.
+    #[fail(display = "Failed to create buffer")]
+    BufferCreationError(#[cause] BufferCreationError),
+
+    /// Image creation error.
+    #[fail(display = "Failed to create image")]
+    ImageCreationError(#[cause] ImageCreationError),
+
+    /// Uploading error.
+    #[fail(display = "Failed to upload data")]
+    UploadError(#[cause] upload::Error),
+}
+
+impl From<BufferCreationError> for FactoryError {
+    fn from(error: BufferCreationError) -> Self {
+        FactoryError::BufferCreationError(error)
+    }
+}
+
+impl From<ImageCreationError> for FactoryError {
+    fn from(error: ImageCreationError) -> Self {
+        FactoryError::ImageCreationError(error)
+    }
+}
+
+impl From<upload::Error> for FactoryError {
+    fn from(error: upload::Error) -> Self {
+        FactoryError::UploadError(error)
+    }
+}
+
+/// Error occurred during buffer creation.
+#[derive(Clone, Debug, Fail)]
+pub enum BufferCreationError {
+    /// Memory error reported from allocator.
+    #[fail(display = "Failed to allocate memory")]
+    MemoryError(#[cause] MemoryError),
+
+    /// Creating error reported by driver.
+    #[fail(display = "Failed to create buffer object")]
+    CreatingError(#[cause] buffer::CreationError),
+}
+
+impl From<MemoryError> for BufferCreationError {
+    fn from(error: MemoryError) -> Self {
+        BufferCreationError::MemoryError(error)
+    }
+}
+
+impl From<buffer::CreationError> for BufferCreationError {
+    fn from(error: buffer::CreationError) -> Self {
+        BufferCreationError::CreatingError(error)
+    }
+}
+
+/// Error occurred during image creation.
+#[derive(Clone, Debug, Fail)]
+pub enum ImageCreationError {
+    /// Memory error reported from allocator.
+    #[fail(display = "Failed to allocate memory")]
+    MemoryError(#[cause] MemoryError),
+
+    /// Creating error reported by driver.
+    #[fail(display = "Failed to create image object")]
+    CreatingError(#[cause] image::CreationError),
+}
+
+impl From<MemoryError> for ImageCreationError {
+    fn from(error: MemoryError) -> Self {
+        ImageCreationError::MemoryError(error)
+    }
+}
+
+impl From<image::CreationError> for ImageCreationError {
+    fn from(error: image::CreationError) -> Self {
+        ImageCreationError::CreatingError(error)
+    }
+}
+
 /// `Factory` is a central type that wraps GPU device and responsible for:
 /// 1. Creating new `Buffer`s and `Image`s.
 /// 2. Destroying `Buffer`s and `Image`s with additional safety.
@@ -110,7 +219,6 @@ pub type Image<B> = Item<<B as Backend>::Image, SmartBlock<<B as Backend>::Memor
 /// 4. Creating `Surface`s and fetching their capabilities.
 /// 5. Fetching `Features` and `Limits` of the GPU.
 ///
-#[repr(C)]
 pub struct Factory<B: Backend<Device = D>, D: Device<B> = <B as Backend>::Device> {
     device: D,
     allocator: ManuallyDrop<SmartAllocator<B>>,
@@ -135,14 +243,16 @@ where
         self.current = u64::max_value() - 1;
         debug!("Dispose of `Factory`");
         unsafe {
-            debug!("Dispose of uploader.");
+            debug!("Dispose of uploader");
             read(&mut *self.upload).dispose(&self.device);
 
             debug!("Advance to the end of times");
             self.advance();
 
-            debug!("Dispose of allocator.");
-            read(&mut *self.allocator).dispose(&self.device).expect("Allocator must be cleared");
+            debug!("Dispose of allocator");
+            read(&mut *self.allocator)
+                .dispose(&self.device)
+                .expect("Allocator must be cleared");
         }
     }
 }
@@ -161,19 +271,18 @@ where
     pub fn create_buffer(
         &mut self,
         size: u64,
-        properties: Properties,
         usage: buffer::Usage,
-    ) -> Result<Buffer<B>, Error> {
-        let buffer: RelevantBuffer<B> = self.allocator
-            .create_buffer(
-                self.device.borrow(),
-                (Type::General, properties),
+        properties: Properties,
+    ) -> Result<Buffer<B>, BufferCreationError> {
+        Ok(Item {
+            inner: self.buffers.escape(create_relevant_buffer(
+                &self.device,
+                &mut self.allocator,
                 size,
                 usage,
-            )
-            .with_context(|_| "Failed to create buffer")?;
-        Ok(Item {
-            inner: self.buffers.escape(buffer),
+                Type::General,
+                properties,
+            )?),
         })
     }
 
@@ -189,28 +298,27 @@ where
     ///
     pub fn create_image(
         &mut self,
-        kind: Kind,
-        level: Level,
+        kind: image::Kind,
+        level: image::Level,
         format: Format,
-        tiling: Tiling,
-        properties: Properties,
+        tiling: image::Tiling,
+        storage_flags: image::StorageFlags,
         usage: image::Usage,
-        storage_flags: StorageFlags,
-    ) -> Result<Image<B>, Error> {
-        let image = self.allocator
-            .create_image(
-                self.device.borrow(),
-                (Type::General, properties),
+        properties: Properties,
+    ) -> Result<Image<B>, ImageCreationError> {
+        Ok(Item {
+            inner: self.images.escape(create_relevant_image(
+                &self.device,
+                &mut self.allocator,
                 kind,
                 level,
                 format,
                 tiling,
-                usage,
                 storage_flags,
-            )
-            .with_context(|_| "Failed to create image")?;
-        Ok(Item {
-            inner: self.images.escape(image),
+                usage,
+                Type::General,
+                properties,
+            )?),
         })
     }
 
@@ -258,16 +366,33 @@ where
         access: buffer::Access,
         offset: u64,
         data: &[u8],
-    ) -> Result<(), Error> {
-        let ref device = self.device;
-        let ref mut allocator = self.allocator;
-        if let Some(staging) =
-            self.upload
-                .upload_buffer(device, allocator, &mut *buffer.inner, family, access, offset, data)?
-        {
+    ) -> Result<(), upload::Error> {
+        let staging = unsafe {
+            // Correct properties provided.
+            let ref device = self.device;
+            let ref mut allocator = self.allocator;
+            let properties = allocator.properties(&buffer.block());
+            self.upload.upload_buffer(
+                device,
+                |alloc_type, properties, size, usage| {
+                    let buffer = create_relevant_buffer(
+                        device, allocator, size, usage, alloc_type, properties,
+                    )?;
+                    let properties = allocator.properties(&buffer.block);
+                    Ok((buffer, properties))
+                },
+                &mut buffer.inner,
+                properties,
+                family,
+                access,
+                offset,
+                data,
+            )?
+        };
+        staging.map(|staging| {
             self.reclamation
                 .push(self.current, AnyItem::Buffer(staging));
-        }
+        });
         Ok(())
     }
 
@@ -286,31 +411,40 @@ where
         &mut self,
         image: &mut Image<B>,
         family: QueueFamilyId,
-        layout: Layout,
+        layout: image::Layout,
         access: image::Access,
-        layers: SubresourceLayers,
-        offset: Offset,
-        extent: Extent,
+        layers: image::SubresourceLayers,
+        offset: image::Offset,
+        extent: image::Extent,
         data_width: u32,
         data_height: u32,
         data: &[u8],
-    ) -> Result<(), Error> {
-        let ref device = self.device;
-        let ref mut allocator = self.allocator;
-        let staging = self.upload.upload_image(
-            device,
-            allocator,
-            &mut *image.inner,
-            family,
-            access,
-            layout,
-            layers,
-            offset,
-            extent,
-            data_width,
-            data_height,
-            data,
-        )?;
+    ) -> Result<(), upload::Error> {
+        let staging = unsafe {
+            // Correct properties provided.
+            let ref device = self.device;
+            let ref mut allocator = self.allocator;
+            self.upload.upload_image(
+                device,
+                |alloc_type, properties, size, usage| {
+                    let buffer = create_relevant_buffer(
+                        device, allocator, size, usage, alloc_type, properties,
+                    )?;
+                    let properties = allocator.properties(&buffer.block);
+                    Ok((buffer, properties))
+                },
+                &mut image.inner,
+                family,
+                access,
+                layout,
+                layers,
+                offset,
+                extent,
+                data_width,
+                data_height,
+                data,
+            )?
+        };
         self.reclamation
             .push(self.current, AnyItem::Buffer(staging));
         Ok(())
@@ -342,7 +476,11 @@ where
     pub fn compatibility(
         &self,
         surface: &B::Surface,
-    ) -> (SurfaceCapabilities, Option<Vec<Format>>, Vec<PresentMode>) {
+    ) -> (
+        window::SurfaceCapabilities,
+        Option<Vec<Format>>,
+        Vec<window::PresentMode>,
+    ) {
         surface.compatibility(&self.physical_device)
     }
 
@@ -359,6 +497,11 @@ where
     /// Get hardware specific limits.
     pub fn limits(&self) -> Limits {
         self.physical_device.limits()
+    }
+
+    /// Retrieve adapter info
+    pub fn adapter_info(&self) -> &AdapterInfo {
+        &self.info
     }
 
     /// Construct `Factory` from parts.
@@ -388,7 +531,9 @@ where
     }
 
     /// Fetch command buffer with uploads recorded.
-    pub(crate) fn uploads(&mut self) -> impl Iterator<Item = (&mut B::CommandBuffer, QueueFamilyId)> {
+    pub(crate) fn uploads(
+        &mut self,
+    ) -> impl Iterator<Item = (&mut B::CommandBuffer, QueueFamilyId)> {
         self.upload.uploads(self.current)
     }
 
@@ -435,12 +580,11 @@ where
     B: Backend<Device = D>,
     D: Device<B>,
 {
-
     #[inline]
     fn allocate_memory(
-        &self, 
-        memory_type: MemoryTypeId, 
-        size: u64
+        &self,
+        memory_type: MemoryTypeId,
+        size: u64,
     ) -> Result<B::Memory, OutOfMemory> {
         self.device.allocate_memory(memory_type, size)
     }
@@ -452,9 +596,9 @@ where
 
     #[inline]
     fn create_command_pool(
-        &self, 
-        family: QueueFamilyId, 
-        create_flags: CommandPoolCreateFlags
+        &self,
+        family: QueueFamilyId,
+        create_flags: CommandPoolCreateFlags,
     ) -> B::CommandPool {
         self.device.create_command_pool(family, create_flags)
     }
@@ -466,10 +610,10 @@ where
 
     #[inline]
     fn create_render_pass<'a, IA, IS, ID>(
-        &self, 
-        attachments: IA, 
-        subpasses: IS, 
-        dependencies: ID
+        &self,
+        attachments: IA,
+        subpasses: IS,
+        dependencies: ID,
     ) -> B::RenderPass
     where
         IA: IntoIterator,
@@ -477,13 +621,10 @@ where
         IS: IntoIterator,
         IS::Item: Borrow<SubpassDesc<'a>>,
         ID: IntoIterator,
-        ID::Item: Borrow<SubpassDependency>
+        ID::Item: Borrow<SubpassDependency>,
     {
-        self.device.create_render_pass(
-            attachments,
-            subpasses,
-            dependencies,
-        )
+        self.device
+            .create_render_pass(attachments, subpasses, dependencies)
     }
 
     #[inline]
@@ -493,20 +634,18 @@ where
 
     #[inline]
     fn create_pipeline_layout<IS, IR>(
-        &self, 
-        set_layouts: IS, 
-        push_constant: IR
+        &self,
+        set_layouts: IS,
+        push_constant: IR,
     ) -> B::PipelineLayout
     where
         IS: IntoIterator,
         IS::Item: Borrow<B::DescriptorSetLayout>,
         IR: IntoIterator,
-        IR::Item: Borrow<(ShaderStageFlags, Range<u32>)>
+        IR::Item: Borrow<(pso::ShaderStageFlags, Range<u32>)>,
     {
-        self.device.create_pipeline_layout(
-            set_layouts,
-            push_constant,
-        )
+        self.device
+            .create_pipeline_layout(set_layouts, push_constant)
     }
 
     #[inline]
@@ -526,14 +665,14 @@ where
 
     #[inline]
     fn create_framebuffer<I>(
-        &self, 
-        pass: &B::RenderPass, 
-        attachments: I, 
-        extent: Extent
+        &self,
+        pass: &B::RenderPass,
+        attachments: I,
+        extent: image::Extent,
     ) -> Result<B::Framebuffer, FramebufferError>
     where
         I: IntoIterator,
-        I::Item: Borrow<B::ImageView>
+        I::Item: Borrow<B::ImageView>,
     {
         self.device.create_framebuffer(pass, attachments, extent)
     }
@@ -544,10 +683,7 @@ where
     }
 
     #[inline]
-    fn create_shader_module(
-        &self, 
-        spirv_data: &[u8]
-    ) -> Result<B::ShaderModule, ShaderError> {
+    fn create_shader_module(&self, spirv_data: &[u8]) -> Result<B::ShaderModule, ShaderError> {
         self.device.create_shader_module(spirv_data)
     }
 
@@ -558,9 +694,9 @@ where
 
     #[inline]
     fn create_buffer(
-        &self, 
-        size: u64, 
-        usage: buffer::Usage
+        &self,
+        size: u64,
+        usage: buffer::Usage,
     ) -> Result<B::UnboundBuffer, buffer::CreationError> {
         self.device.create_buffer(size, usage)
     }
@@ -572,10 +708,10 @@ where
 
     #[inline]
     fn bind_buffer_memory(
-        &self, 
-        memory: &B::Memory, 
-        offset: u64, 
-        buf: B::UnboundBuffer
+        &self,
+        memory: &B::Memory,
+        offset: u64,
+        buf: B::UnboundBuffer,
     ) -> Result<B::Buffer, BindError> {
         self.device.bind_buffer_memory(memory, offset, buf)
     }
@@ -587,10 +723,10 @@ where
 
     #[inline]
     fn create_buffer_view<R: RangeArg<u64>>(
-        &self, 
-        buf: &B::Buffer, 
-        fmt: Option<Format>, 
-        range: R
+        &self,
+        buf: &B::Buffer,
+        fmt: Option<Format>,
+        range: R,
     ) -> Result<B::BufferView, buffer::ViewCreationError> {
         self.device.create_buffer_view(buf, fmt, range)
     }
@@ -602,15 +738,16 @@ where
 
     #[inline]
     fn create_image(
-        &self, 
-        kind: Kind, 
-        mip_levels: Level, 
-        format: Format, 
-        tiling: Tiling, 
-        usage: image::Usage, 
-        storage_flags: StorageFlags
+        &self,
+        kind: image::Kind,
+        mip_levels: image::Level,
+        format: Format,
+        tiling: image::Tiling,
+        usage: image::Usage,
+        storage_flags: image::StorageFlags,
     ) -> Result<B::UnboundImage, image::CreationError> {
-        self.device.create_image(kind, mip_levels, format, tiling, usage, storage_flags)
+        self.device
+            .create_image(kind, mip_levels, format, tiling, usage, storage_flags)
     }
 
     #[inline]
@@ -620,10 +757,10 @@ where
 
     #[inline]
     fn bind_image_memory(
-        &self, 
-        memory: &B::Memory, 
-        offset: u64, 
-        image: B::UnboundImage
+        &self,
+        memory: &B::Memory,
+        offset: u64,
+        image: B::UnboundImage,
     ) -> Result<B::Image, BindError> {
         self.device.bind_image_memory(memory, offset, image)
     }
@@ -635,14 +772,15 @@ where
 
     #[inline]
     fn create_image_view(
-        &self, 
-        image: &B::Image, 
-        view_kind: ViewKind, 
-        format: Format, 
-        swizzle: Swizzle, 
-        range: SubresourceRange
+        &self,
+        image: &B::Image,
+        view_kind: image::ViewKind,
+        format: Format,
+        swizzle: Swizzle,
+        range: image::SubresourceRange,
     ) -> Result<B::ImageView, image::ViewError> {
-        self.device.create_image_view(image, view_kind, format, swizzle, range)
+        self.device
+            .create_image_view(image, view_kind, format, swizzle, range)
     }
 
     #[inline]
@@ -651,7 +789,7 @@ where
     }
 
     #[inline]
-    fn create_sampler(&self, info: SamplerInfo) -> B::Sampler {
+    fn create_sampler(&self, info: image::SamplerInfo) -> B::Sampler {
         self.device.create_sampler(info)
     }
 
@@ -661,16 +799,13 @@ where
     }
 
     #[inline]
-    fn create_descriptor_pool<I>(
-        &self, 
-        max_sets: usize, 
-        descriptor_ranges: I
-    ) -> B::DescriptorPool
+    fn create_descriptor_pool<I>(&self, max_sets: usize, descriptor_ranges: I) -> B::DescriptorPool
     where
         I: IntoIterator,
-        I::Item: Borrow<DescriptorRangeDesc>,
+        I::Item: Borrow<pso::DescriptorRangeDesc>,
     {
-        self.device.create_descriptor_pool(max_sets, descriptor_ranges)
+        self.device
+            .create_descriptor_pool(max_sets, descriptor_ranges)
     }
 
     #[inline]
@@ -680,17 +815,18 @@ where
 
     #[inline]
     fn create_descriptor_set_layout<I, J>(
-        &self, 
+        &self,
         bindings: I,
         immutable_samplers: J,
     ) -> B::DescriptorSetLayout
     where
         I: IntoIterator,
-        I::Item: Borrow<DescriptorSetLayoutBinding>,
+        I::Item: Borrow<pso::DescriptorSetLayoutBinding>,
         J: IntoIterator,
         J::Item: Borrow<B::Sampler>,
     {
-        self.device.create_descriptor_set_layout(bindings, immutable_samplers)
+        self.device
+            .create_descriptor_set_layout(bindings, immutable_samplers)
     }
 
     #[inline]
@@ -701,9 +837,9 @@ where
     #[inline]
     fn write_descriptor_sets<'a, I, J>(&self, write_iter: I)
     where
-        I: IntoIterator<Item = DescriptorSetWrite<'a, B, J>>,
+        I: IntoIterator<Item = pso::DescriptorSetWrite<'a, B, J>>,
         J: IntoIterator,
-        J::Item: Borrow<Descriptor<'a, B>>,
+        J::Item: Borrow<pso::Descriptor<'a, B>>,
     {
         self.device.write_descriptor_sets(write_iter)
     }
@@ -712,17 +848,13 @@ where
     fn copy_descriptor_sets<'a, I>(&self, copy_iter: I)
     where
         I: IntoIterator,
-        I::Item: Borrow<DescriptorSetCopy<'a, B>>,
+        I::Item: Borrow<pso::DescriptorSetCopy<'a, B>>,
     {
         self.device.copy_descriptor_sets(copy_iter)
     }
 
     #[inline]
-    fn map_memory<R>(
-        &self, 
-        memory: &B::Memory, 
-        range: R
-    ) -> Result<*mut u8, mapping::Error>
+    fn map_memory<R>(&self, memory: &B::Memory, range: R) -> Result<*mut u8, mapping::Error>
     where
         R: RangeArg<u64>,
     {
@@ -791,13 +923,14 @@ where
 
     #[inline]
     fn create_swapchain(
-        &self, 
-        surface: &mut B::Surface, 
-        config: SwapchainConfig,
+        &self,
+        surface: &mut B::Surface,
+        config: window::SwapchainConfig,
         old_swapchain: Option<B::Swapchain>,
-        extent: &Extent2D
-    ) -> (B::Swapchain, Backbuffer<B>) {
-        self.device.create_swapchain(surface, config, old_swapchain, extent)
+        extent: &window::Extent2D,
+    ) -> (B::Swapchain, window::Backbuffer<B>) {
+        self.device
+            .create_swapchain(surface, config, old_swapchain, extent)
     }
 
     #[inline]
@@ -810,21 +943,21 @@ where
         self.device.wait_idle()
     }
 
-
     #[inline]
     fn create_command_pool_typed<C>(
         &self,
         group: &QueueGroup<B, C>,
         flags: CommandPoolCreateFlags,
-        max_buffers: usize
+        max_buffers: usize,
     ) -> CommandPool<B, C> {
-        self.device.create_command_pool_typed(group, flags, max_buffers)
+        self.device
+            .create_command_pool_typed(group, flags, max_buffers)
     }
 
     #[inline]
     fn create_graphics_pipeline<'a>(
         &self,
-        desc: &GraphicsPipelineDesc<'a, B>
+        desc: &pso::GraphicsPipelineDesc<'a, B>,
     ) -> Result<B::GraphicsPipeline, pso::CreationError> {
         self.device.create_graphics_pipeline(desc)
     }
@@ -832,40 +965,40 @@ where
     #[inline]
     fn create_graphics_pipelines<'a, I>(
         &self,
-        descs: I
+        descs: I,
     ) -> Vec<Result<B::GraphicsPipeline, pso::CreationError>>
     where
         I: IntoIterator,
-        I::Item: Borrow<GraphicsPipelineDesc<'a, B>>,
+        I::Item: Borrow<pso::GraphicsPipelineDesc<'a, B>>,
     {
         self.device.create_graphics_pipelines(descs)
     }
 
     #[inline]
     fn create_compute_pipeline<'a>(
-        &self, 
-        desc: &ComputePipelineDesc<'a, B>
+        &self,
+        desc: &pso::ComputePipelineDesc<'a, B>,
     ) -> Result<B::ComputePipeline, pso::CreationError> {
         self.device.create_compute_pipeline(desc)
     }
 
     #[inline]
     fn create_compute_pipelines<'a, I>(
-        &self, 
-        descs: I
+        &self,
+        descs: I,
     ) -> Vec<Result<B::ComputePipeline, pso::CreationError>>
     where
         I: IntoIterator,
-        I::Item: Borrow<ComputePipelineDesc<'a, B>>,
+        I::Item: Borrow<pso::ComputePipelineDesc<'a, B>>,
     {
         self.device.create_compute_pipelines(descs)
     }
 
     #[inline]
     fn acquire_mapping_reader<'a, T>(
-        &self, 
-        memory: &'a B::Memory, 
-        range: Range<u64>
+        &self,
+        memory: &'a B::Memory,
+        range: Range<u64>,
     ) -> Result<Reader<'a, B, T>, mapping::Error>
     where
         T: Copy,
@@ -880,9 +1013,9 @@ where
 
     #[inline]
     fn acquire_mapping_writer<'a, T>(
-        &self, 
-        memory: &'a B::Memory, 
-        range: Range<u64>
+        &self,
+        memory: &'a B::Memory,
+        range: Range<u64>,
     ) -> Result<Writer<'a, B, T>, mapping::Error>
     where
         T: Copy,
@@ -915,12 +1048,7 @@ where
     }
 
     #[inline]
-    fn wait_for_fences<I>(
-        &self, 
-        fences: I, 
-        wait: WaitFor, 
-        timeout_ms: u32
-    ) -> bool
+    fn wait_for_fences<I>(&self, fences: I, wait: WaitFor, timeout_ms: u32) -> bool
     where
         I: IntoIterator,
         I::Item: Borrow<B::Fence>,
@@ -930,14 +1058,14 @@ where
 
     #[inline]
     fn get_image_subresource_footprint(
-        &self, image: &B::Image, subresource: Subresource
-    ) -> SubresourceFootprint {
-        self.device.get_image_subresource_footprint(image, subresource)
+        &self,
+        image: &B::Image,
+        subresource: image::Subresource,
+    ) -> image::SubresourceFootprint {
+        self.device
+            .get_image_subresource_footprint(image, subresource)
     }
 }
-
-pub(crate) type RelevantBuffer<B> = RelevantItem<<B as Backend>::Buffer, SmartBlock<<B as Backend>::Memory>>;
-pub(crate) type RelevantImage<B> = RelevantItem<<B as Backend>::Image, SmartBlock<<B as Backend>::Memory>>;
 
 #[derive(Debug)]
 enum AnyItem<B: Backend> {
@@ -952,10 +1080,12 @@ where
     pub fn destroy(self, device: &B::Device, allocator: &mut SmartAllocator<B>) {
         match self {
             AnyItem::Buffer(buffer) => {
-                allocator.destroy_buffer(device, buffer);
+                device.destroy_buffer(buffer.raw);
+                allocator.free(device, buffer.block);
             }
             AnyItem::Image(image) => {
-                allocator.destroy_image(device, image);
+                device.destroy_image(image.raw);
+                allocator.free(device, image.block);
             }
         }
     }
@@ -968,4 +1098,64 @@ fn factory_send_sync() {
     fn for_any_backend<B: Backend>() {
         is_send_sync::<Factory<B>>();
     }
+}
+
+fn create_relevant_buffer<B>(
+    device: &B::Device,
+    allocator: &mut SmartAllocator<B>,
+    size: u64,
+    usage: buffer::Usage,
+    alloc_type: Type,
+    properties: Properties,
+) -> Result<RelevantBuffer<B>, BufferCreationError>
+where
+    B: Backend,
+{
+    // Create unbound buffer object.
+    let ubuf = device.create_buffer(size, usage)?;
+
+    // Get memory requirements.
+    let reqs = device.get_buffer_requirements(&ubuf);
+
+    // Allocate memory block.
+    let block = allocator.alloc(device, (alloc_type, properties), reqs)?;
+
+    // Bind memory. Infallible unless unless bugged.
+    let raw = device
+        .bind_buffer_memory(block.memory(), block.range().start, ubuf)
+        .expect("Requirements must be satisfied");
+
+    Ok(RelevantItem { raw, block })
+}
+
+fn create_relevant_image<B>(
+    device: &B::Device,
+    allocator: &mut SmartAllocator<B>,
+    kind: image::Kind,
+    level: image::Level,
+    format: Format,
+    tiling: image::Tiling,
+    storage_flags: image::StorageFlags,
+    usage: image::Usage,
+    alloc_type: Type,
+    properties: Properties,
+) -> Result<RelevantImage<B>, ImageCreationError>
+where
+    B: Backend,
+{
+    // Create unbound image object.
+    let uimg = device.create_image(kind, level, format, tiling, usage, storage_flags)?;
+
+    // Get memory requirements.
+    let reqs = device.get_image_requirements(&uimg);
+
+    // Allocate memory block.
+    let block = allocator.alloc(device, (alloc_type, properties), reqs)?;
+
+    // Bind memory. Infallible unless unless bugged.
+    let raw = device
+        .bind_image_memory(block.memory(), block.range().start, uimg)
+        .expect("Requirements must be satisfied");
+
+    Ok(RelevantItem { raw, block })
 }

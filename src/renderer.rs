@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 
 use failure::Error;
 
-use hal::{Backend, Device as HalDevice};
 use hal::device::WaitFor;
 use hal::queue::{QueueFamilyId, RawCommandQueue, RawSubmission};
-use hal::window::{Backbuffer};
+use hal::window::Backbuffer;
+use hal::{Backend, Device as HalDevice};
 
 use winit::Window;
 
@@ -55,11 +55,7 @@ where
     }
 
     /// Creates new render target
-    pub fn add_target(
-        &mut self,
-        window: &Window,
-        factory: &mut Factory<B>,
-    ) -> TargetId {
+    pub fn add_target(&mut self, window: &Window, factory: &mut Factory<B>) -> TargetId {
         self.counter += 1;
         let id = TargetId(self.counter);
         debug_assert!(self.targets.get(&id).is_none());
@@ -86,26 +82,41 @@ where
     }
 
     /// Add graph to the render
-    pub fn set_render<F, E, T>(&mut self, id: TargetId, factory: &mut Factory<B>, data: &mut T, render: F) -> Result<(), Error>
+    pub fn set_render<F, E, T>(
+        &mut self,
+        id: TargetId,
+        factory: &mut Factory<B>,
+        data: &mut T,
+        render: F,
+    ) -> Result<(), Error>
     where
         F: FnOnce(&mut B::Surface, &[B::QueueFamily], &mut Factory<B>, &mut T) -> Result<R, E>,
         E: Into<Error>,
         R: Render<B, T>,
     {
-        let ref mut target = *self.targets
+        let ref mut target = *self
+            .targets
             .get_mut(&id)
             .ok_or(format_err!("No target with id {:#?}", id))?;
 
         target.wait(factory);
-        target.render.take().map(|render| render.dispose(factory, data));
-        target.render = Some(render(&mut target.surface, &self.families.families, factory, data).map_err(|err| err.into().context("Failed to build render"))?);
-
+        target
+            .render
+            .take()
+            .map(|render| render.dispose(factory, data));
+        target.render = Some(
+            render(&mut target.surface, &self.families.families, factory, data)
+                .map_err(|err| err.into().context("Failed to build render"))?,
+        );
 
         Ok(())
     }
 
     /// Create new render system providing it with general queue group and surfaces to draw onto
-    pub fn new(queues: HashMap<QueueFamilyId, Vec<B::CommandQueue>>, families: Vec<B::QueueFamily>,) -> Self
+    pub fn new(
+        queues: HashMap<QueueFamilyId, Vec<B::CommandQueue>>,
+        families: Vec<B::QueueFamily>,
+    ) -> Self
     where
         R: Send + Sync,
     {
@@ -116,10 +127,7 @@ where
             autorelease: AutoreleasePool::new(),
             targets: HashMap::new(),
             counter: 0,
-            families: Families {
-                queues,
-                families,
-            },
+            families: Families { queues, families },
         }
     }
 
@@ -199,12 +207,7 @@ where
         self.wait(factory);
 
         if let Some(ref mut render) = self.render {
-            render.run(
-                &mut self.fences,
-                &mut families.queues,
-                factory,
-                data,
-            );
+            render.run(&mut self.fences, &mut families.queues, factory, data);
         };
     }
 

@@ -1,27 +1,19 @@
-use std::borrow::{Borrow, BorrowMut};
-use std::collections::{VecDeque, HashMap};
-use std::slice::from_raw_parts_mut;
+use std::borrow::Borrow;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::slice::from_raw_parts_mut;
 
-use failure::{Error, Fail, ResultExt};
-
-use hal::{Backend, Device};
-use hal::buffer::{Access as BufferAccess, Usage as BufferUsage};
+use hal::buffer;
 use hal::command::{BufferCopy, BufferImageCopy, CommandBufferFlags, RawCommandBuffer, RawLevel};
-
-use hal::image::{Access as ImageAccess, Extent, Layout, Offset, SubresourceLayers,
-                 SubresourceRange};
-use hal::mapping::Error as MappingError;
+use hal::image;
 use hal::memory::{Barrier, Dependencies, Properties};
 use hal::pool::{CommandPoolCreateFlags, RawCommandPool};
 use hal::pso::PipelineStage;
 use hal::queue::QueueFamilyId;
+use hal::{Backend, Device};
 
-use mem::{Block, Factory, Item, SmartAllocator, SmartBlock, Type};
-
-type SmartBuffer<B> = Item<<B as Backend>::Buffer, SmartBlock<<B as Backend>::Memory>>;
-type SmartImage<B> = Item<<B as Backend>::Image, SmartBlock<<B as Backend>::Memory>>;
-
+use factory::{BufferCreationError, RelevantBuffer, RelevantImage};
+use mem::{Block, Type};
 
 #[derive(Debug)]
 struct FamilyDebug {
@@ -42,11 +34,30 @@ where
     B: Backend,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(&FamilyDebug {
-            cbuf: self.cbuf.is_some(),
-            free: self.free.len(),
-            used: self.used.len(),
-        }, fmt)
+        fmt::Debug::fmt(
+            &FamilyDebug {
+                cbuf: self.cbuf.is_some(),
+                free: self.free.len(),
+                used: self.used.len(),
+            },
+            fmt,
+        )
+    }
+}
+
+/// Errors occurred during data uploading.
+#[derive(Clone, Debug, Fail)]
+pub enum Error {
+    #[fail(display = "Failed to create staging buffer")]
+    StagingCreationError(#[cause] BufferCreationError),
+
+    #[fail(display = "Data is larger than buffer it should be uploaded to")]
+    OutOfBounds,
+}
+
+impl From<BufferCreationError> for Error {
+    fn from(error: BufferCreationError) -> Self {
+        Error::StagingCreationError(error)
     }
 }
 
@@ -67,7 +78,9 @@ where
             family.free.clear();
             assert!(family.used.is_empty());
             unsafe {
-                family.pool.free(family.cbuf.into_iter().chain(family.free).collect());
+                family
+                    .pool
+                    .free(family.cbuf.into_iter().chain(family.free).collect());
             }
             device.destroy_command_pool(family.pool);
         }
@@ -80,89 +93,93 @@ where
         }
     }
 
-    pub fn upload_buffer(
+    /// # Safety
+    ///
+    /// `properties` must match those of `buffer`.
+    /// `allocator` must return correct properties.
+    pub unsafe fn upload_buffer<A>(
         &mut self,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
-        buffer: &mut SmartBuffer<B>,
+        allocator: A,
+        buffer: &mut RelevantBuffer<B>,
+        properties: Properties,
         fid: QueueFamilyId,
-        access: BufferAccess,
+        access: buffer::Access,
         offset: u64,
         data: &[u8],
-    ) -> Result<Option<SmartBuffer<B>>, Error> {
+    ) -> Result<Option<RelevantBuffer<B>>, Error>
+    where
+        A: FnMut(Type, Properties, u64, buffer::Usage)
+            -> Result<(RelevantBuffer<B>, Properties), BufferCreationError>,
+    {
         if buffer.size() < offset + data.len() as u64 {
-            return Err(MappingError::OutOfBounds.context("Buffer upload failed").into())
+            return Err(Error::OutOfBounds);
         }
-        let props = allocator.properties(buffer.block());
-        if props.contains(Properties::CPU_VISIBLE) {
-            unsafe {
-                // Safe due to block is checked to have `CPU_VISIBLE` property.
-                update_cpu_visible_block::<B>(
-                    device,
-                    props.contains(Properties::COHERENT),
-                    buffer.block(),
-                    offset,
-                    data,
-                );
-            }
+        if properties.contains(Properties::CPU_VISIBLE) {
+            update_cpu_visible_block::<B>(
+                device,
+                properties.contains(Properties::COHERENT),
+                buffer,
+                offset,
+                data,
+            );
             Ok(None)
         } else {
             self.upload_device_local_buffer(device, allocator, buffer, fid, access, offset, data)
         }
     }
 
-    pub fn upload_image(
+    /// # Safety
+    ///
+    /// `allocator` must return correct properties.
+    pub unsafe fn upload_image<A>(
         &mut self,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
-        image: &mut SmartImage<B>,
+        mut allocator: A,
+        image: &mut RelevantImage<B>,
         fid: QueueFamilyId,
-        access: ImageAccess,
-        layout: Layout,
-        layers: SubresourceLayers,
-        offset: Offset,
-        extent: Extent,
+        access: image::Access,
+        layout: image::Layout,
+        layers: image::SubresourceLayers,
+        offset: image::Offset,
+        extent: image::Extent,
         data_width: u32,
         data_height: u32,
         data: &[u8],
-    ) -> Result<SmartBuffer<B>, Error> {
-        // Check requirements.
-        // TODO: Return `Error` instead of panicking.
+    ) -> Result<RelevantBuffer<B>, Error>
+    where
+        A: FnMut(Type, Properties, u64, buffer::Usage)
+            -> Result<(RelevantBuffer<B>, Properties), BufferCreationError>,
+    {
         assert!(data_width >= extent.width);
         assert!(data_height >= extent.height);
         assert_eq!(layers.aspects.bits().count_ones(), 1);
         assert!(data_width as usize * data_height as usize * extent.depth as usize <= data.len());
 
-        let staging = allocator
-            .create_buffer(
-                device,
-                (Type::ShortLived, Properties::CPU_VISIBLE),
-                data.len() as u64,
-                BufferUsage::TRANSFER_SRC,
-            )
-            .with_context(|_| "Failed to create staging buffer")?;
-        let props = allocator.properties(staging.block());
-        unsafe {
-            // Safe due to block is allocated with `CPU_VISIBLE` property.
-            update_cpu_visible_block::<B>(
-                device,
-                props.contains(Properties::COHERENT),
-                staging.block(),
-                0,
-                data,
-            );
-        }
+        let (staging, properties) = allocator(
+            Type::ShortLived,
+            Properties::CPU_VISIBLE,
+            data.len() as u64,
+            buffer::Usage::TRANSFER_SRC,
+        )?;
+        update_cpu_visible_block::<B>(
+            device,
+            properties.contains(Properties::COHERENT),
+            &staging,
+            0,
+            data,
+        );
 
-        let uploading_layout = if layout == Layout::General {
-            Layout::General
+        let uploading_layout = if layout == image::Layout::General {
+            image::Layout::General
         } else {
-            Layout::TransferDstOptimal
+            image::Layout::TransferDstOptimal
         };
 
         let cbuf = self.get_command_buffer(device, fid);
         cbuf.copy_buffer_to_image(
             staging.borrow(),
-            image.borrow_mut(),
+            (&*image).borrow(),
             uploading_layout,
             Some(BufferImageCopy {
                 buffer_offset: 0,
@@ -178,9 +195,9 @@ where
             PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
             Dependencies::empty(),
             Some(Barrier::Image {
-                states: (ImageAccess::TRANSFER_WRITE, uploading_layout)..(access, layout),
-                target: image.borrow_mut(),
-                range: SubresourceRange {
+                states: (image::Access::TRANSFER_WRITE, uploading_layout)..(access, layout),
+                target: (&*image).borrow(),
+                range: image::SubresourceRange {
                     aspects: layers.aspects,
                     levels: layers.level..layers.level,
                     layers: layers.layers,
@@ -191,7 +208,10 @@ where
     }
 
     #[inline]
-    pub fn uploads(&mut self, frame: u64) -> impl Iterator<Item = (&mut B::CommandBuffer, QueueFamilyId)> {
+    pub fn uploads(
+        &mut self,
+        frame: u64,
+    ) -> impl Iterator<Item = (&mut B::CommandBuffer, QueueFamilyId)> {
         self.families.iter_mut().filter_map(move |(&fid, family)| {
             if let Some(mut cbuf) = family.cbuf.take() {
                 cbuf.finish();
@@ -216,7 +236,11 @@ where
         });
     }
 
-    fn get_command_buffer<'a>(&'a mut self, device: &B::Device, fid: QueueFamilyId) -> &'a mut B::CommandBuffer {
+    fn get_command_buffer<'a>(
+        &'a mut self,
+        device: &B::Device,
+        fid: QueueFamilyId,
+    ) -> &'a mut B::CommandBuffer {
         let Family {
             ref mut pool,
             ref mut cbuf,
@@ -229,57 +253,58 @@ where
             used: VecDeque::new(),
         });
         cbuf.get_or_insert_with(|| {
-            let mut cbuf = free.pop().unwrap_or_else(|| {
-                pool.allocate(1, RawLevel::Primary).remove(0)
-            });
+            let mut cbuf = free
+                .pop()
+                .unwrap_or_else(|| pool.allocate(1, RawLevel::Primary).remove(0));
             cbuf.begin(CommandBufferFlags::ONE_TIME_SUBMIT, Default::default());
             cbuf
         })
     }
 
-    fn upload_device_local_buffer(
+    /// # Safety
+    ///
+    /// `allocator` must return correct properties.
+    unsafe fn upload_device_local_buffer<A>(
         &mut self,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
-        buffer: &mut SmartBuffer<B>,
+        mut allocator: A,
+        buffer: &mut RelevantBuffer<B>,
         fid: QueueFamilyId,
-        access: BufferAccess,
+        access: buffer::Access,
         offset: u64,
         data: &[u8],
-    ) -> Result<Option<SmartBuffer<B>>, Error> {
+    ) -> Result<Option<RelevantBuffer<B>>, Error>
+    where
+        A: FnMut(Type, Properties, u64, buffer::Usage)
+            -> Result<(RelevantBuffer<B>, Properties), BufferCreationError>,
+    {
         if data.len() <= self.staging_threshold {
             let cbuf = self.get_command_buffer(device, fid);
-            cbuf.update_buffer(buffer.borrow_mut(), offset, data);
+            cbuf.update_buffer((&*buffer).borrow(), offset, data);
 
             cbuf.pipeline_barrier(
                 PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
                 Dependencies::empty(),
                 Some(Barrier::Buffer {
-                    states: BufferAccess::TRANSFER_WRITE..access,
-                    target: buffer.borrow_mut(),
+                    states: buffer::Access::TRANSFER_WRITE..access,
+                    target: (&*buffer).borrow(),
                 }),
             );
             Ok(None)
         } else {
-            let staging = allocator
-                .create_buffer(
-                    device,
-                    (Type::ShortLived, Properties::CPU_VISIBLE),
-                    data.len() as u64,
-                    BufferUsage::TRANSFER_SRC,
-                )
-                .with_context(|_| "Failed to create staging buffer")?;
-            let props = allocator.properties(staging.block());
-            unsafe {
-                // Safe due to block is allocated with `CPU_VISIBLE` property.
-                update_cpu_visible_block::<B>(
-                    device,
-                    props.contains(Properties::COHERENT),
-                    staging.block(),
-                    0,
-                    data,
-                );
-            }
+            let (staging, properties) = allocator(
+                Type::ShortLived,
+                Properties::CPU_VISIBLE,
+                data.len() as u64,
+                buffer::Usage::TRANSFER_SRC,
+            )?;
+            update_cpu_visible_block::<B>(
+                device,
+                properties.contains(Properties::COHERENT),
+                &staging,
+                0,
+                data,
+            );
             let cbuf = self.get_command_buffer(device, fid);
             cbuf.copy_buffer(
                 staging.borrow(),
@@ -294,8 +319,8 @@ where
                 PipelineStage::TRANSFER..PipelineStage::TOP_OF_PIPE,
                 Dependencies::empty(),
                 Some(Barrier::Buffer {
-                    states: BufferAccess::TRANSFER_WRITE..access,
-                    target: buffer.borrow_mut(),
+                    states: buffer::Access::TRANSFER_WRITE..access,
+                    target: (&*buffer).borrow(),
                 }),
             );
             Ok(Some(staging))
@@ -313,26 +338,26 @@ where
 pub unsafe fn update_cpu_visible_block<B: Backend>(
     device: &B::Device,
     coherent: bool,
-    block: &SmartBlock<B::Memory>,
+    buffer: &RelevantBuffer<B>,
     offset: u64,
     data: &[u8],
 ) {
-    let start = block.range().start + offset;
+    let start = buffer.range().start + offset;
     let end = start + data.len() as u64;
     let range = start..end;
     debug_assert!(
-        end <= block.range().end,
+        end <= buffer.range().end,
         "Checked in `Upload::upload` method"
     );
     let ptr = device
-        .map_memory(block.memory(), range.clone())
+        .map_memory(buffer.memory(), range.clone())
         .expect("Expect to be mapped");
     if !coherent {
-        device.invalidate_mapped_memory_ranges(Some((block.memory(), range.clone())));
+        device.invalidate_mapped_memory_ranges(Some((buffer.memory(), range.clone())));
     }
     let slice = from_raw_parts_mut(ptr, data.len());
     slice.copy_from_slice(data);
     if !coherent {
-        device.flush_mapped_memory_ranges(Some((block.memory(), range)));
+        device.flush_mapped_memory_ranges(Some((buffer.memory(), range)));
     }
 }

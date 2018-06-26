@@ -3,10 +3,10 @@
 //! `Escape` wrapper help the user to do so by sending underlying value to the `Terminal` when it is dropped.
 //! Users are encouraged to dispose of the values manually while `Escape` be just a safety net.
 
+use crossbeam_channel::{unbounded, Receiver, Sender, TryIter, TryRecvError};
 use std::mem::{forget, ManuallyDrop};
 use std::ops::{Deref, DerefMut};
 use std::ptr::read;
-use crossbeam_channel::{unbounded, Receiver, Sender, TryIter, TryRecvError};
 
 /// Wraps value of any type and send it to the `Terminal` from which the wrapper was created.
 /// In case `Terminal` is already dropped then value will be cast into oblivion via `std::mem::forget`.
@@ -72,7 +72,10 @@ impl<T> Terminal<T> {
     /// Create new `Terminal`.
     pub fn new() -> Self {
         let (sender, receiver) = unbounded();
-        Terminal { sender: ManuallyDrop::new(sender), receiver }
+        Terminal {
+            sender: ManuallyDrop::new(sender),
+            receiver,
+        }
     }
 
     /// Wrap the value. It will be yielded by iterator returned by `Terminal::drain` if `Escape` will be dropped.

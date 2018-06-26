@@ -1,4 +1,3 @@
-
 #[derive(Debug)]
 struct ReclamationNode<I> {
     items: Vec<I>,
