@@ -50,5 +50,5 @@ mod upload;
 
 pub use backend::BackendEx;
 pub use factory::{Buffer, Factory, Image, Item};
-pub use init::{init, Config, MemoryConfig, AdapterPicker, QueuesPicker, FirstAdapter, adapter_picker, queue_picker};
+pub use init::{init, Config, MemoryConfig, AdapterPicker, QueuesPicker, FirstAdapter, adapter_picker, adapter_by_name, adapter_by_name_regex, queue_picker};
 pub use renderer::{Render, Renderer, TargetId};

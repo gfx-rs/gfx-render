@@ -60,6 +60,14 @@ where
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AdapterByName<T>(T);
 
+/// Choose adapter by name.
+pub fn adapter_by_name<T>(name: T) -> AdapterByName<T>
+where
+    T: PartialEq<String>
+{
+    AdapterByName(name)
+}
+
 impl<B, T> AdapterPicker<B> for AdapterByName<T>
 where
     B: Backend,
@@ -77,6 +85,11 @@ where
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AdapterByNameRe(#[cfg_attr(feature = "serde", serde(with = "::serde_regex"))] Regex);
+
+/// Choose adapter by name matching regex.
+pub fn adapter_by_name_regex(name: Regex) -> AdapterByNameRe {
+    AdapterByNameRe(name)
+}
 
 #[cfg(feature = "regex")]
 impl<B> AdapterPicker<B> for AdapterByNameRe
