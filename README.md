@@ -4,7 +4,7 @@ This crates adds basic functionality around [`gfx-hal`](https://github.com/gfx-r
 
 `Factory`'s functionality:
 1. Allocating wrapped buffers and images using [`gfx-memory`'s](https://github.com/gfx-rs/gfx-memory) `SmartAllocator`.
-  Wrapper will release resource atuomatically on drop.
+  Wrapper will release resource automatically on drop.
   Also supports manual deallocation with less overhead than automatic.
 1. Preserving deallocated buffers and images until they are not references by GPU's in-progress commands.
   Simply by waiting for all jobs that were recording or in-progress at the moment of deallocation to complete.
