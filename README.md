@@ -1,3 +1,7 @@
+# Attention
+
+This project is discontinued in favor of [rendy](https://github.com/omni-viral/rendy).
+
 # gfx-render
 
 This crates adds basic functionality around [`gfx-hal`](https://github.com/gfx-rs/gfx) through two primary types `Factory` and `Renderer` that can be instantiated together by `init` function.
